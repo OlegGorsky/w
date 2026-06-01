@@ -78,6 +78,9 @@ foreach ($requiredFunction in @(
     "Get-CodexDesktopStoreUpdateManifest",
     "Wait-CodexDesktopPackage",
     "Assert-AuthenticodeSignature",
+    "Assert-CodexDesktopMsixPackage",
+    "Get-MsixManifestInfo",
+    "Get-ArchiveEntryText",
     "Join-CommandArguments",
     "Write-CodexDesktopOfficialPathDiagnostics",
     "Get-RegistryDwordValue",
@@ -112,7 +115,10 @@ Assert-Contains -Haystack $content -Needle 'displaycatalog.mp.microsoft.com' -Me
 Assert-Contains -Haystack $content -Needle 'fe3.delivery.mp.microsoft.com' -Message "Direct MSIX fallback must resolve a Microsoft CDN URL through FE3."
 Assert-Contains -Haystack $content -Needle 'Add-AppxPackage -Path' -Message "Direct MSIX fallback must install with Add-AppxPackage."
 Assert-Contains -Haystack $content -Needle 'AllowAllTrustedApps' -Message "Direct MSIX fallback must enable trusted MSIX sideloading when needed."
+Assert-Contains -Haystack $content -Needle 'MSIX publisher does not match signer' -Message "Direct MSIX fallback must validate manifest publisher against the signer certificate."
+Assert-Contains -Haystack $content -Needle 'Unexpected MSIX package identity' -Message "Direct MSIX fallback must validate OpenAI.Codex package identity."
 Assert-Contains -Haystack $content -Needle 'Skipping Microsoft Store web installer on this Server build' -Message "Server builds without winget must not open the Store web installer loop."
+Assert-Contains -Haystack $content -Needle 'WSL distro install did not complete automatically' -Message "WSL distro install failures should become follow-up actions instead of failing the whole component."
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."

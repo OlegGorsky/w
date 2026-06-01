@@ -701,6 +701,102 @@ function Assert-AuthenticodeSignature {
     Write-Ok "Verified Authenticode signature: $subject"
 }
 
+function Get-ArchiveEntryText {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$EntryName
+    )
+
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+
+    $archive = $null
+    $reader = $null
+    $stream = $null
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+        $entry = $archive.Entries | Where-Object { $_.FullName -ieq $EntryName } | Select-Object -First 1
+        if ($null -eq $entry) {
+            throw "Archive entry not found: $EntryName"
+        }
+
+        $stream = $entry.Open()
+        $reader = New-Object IO.StreamReader($stream)
+        return $reader.ReadToEnd()
+    } finally {
+        if ($null -ne $reader) {
+            $reader.Dispose()
+        } elseif ($null -ne $stream) {
+            $stream.Dispose()
+        }
+
+        if ($null -ne $archive) {
+            $archive.Dispose()
+        }
+    }
+}
+
+function Get-MsixManifestInfo {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $manifestText = Get-ArchiveEntryText -ArchivePath $Path -EntryName "AppxManifest.xml"
+    $document = New-Object Xml.XmlDocument
+    $document.PreserveWhitespace = $false
+    $document.LoadXml($manifestText)
+
+    $identity = $document.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Identity']")
+    if ($null -eq $identity) {
+        throw "MSIX manifest is missing Package/Identity."
+    }
+
+    $publisherDisplayNameNode = $document.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Properties']/*[local-name()='PublisherDisplayName']")
+    $displayNameNode = $document.SelectSingleNode("/*[local-name()='Package']/*[local-name()='Properties']/*[local-name()='DisplayName']")
+
+    return [PSCustomObject]@{
+        Name                 = [string]$identity.GetAttribute("Name")
+        Publisher            = [string]$identity.GetAttribute("Publisher")
+        Version              = [string]$identity.GetAttribute("Version")
+        ProcessorArchitecture = [string]$identity.GetAttribute("ProcessorArchitecture")
+        PublisherDisplayName = if ($null -ne $publisherDisplayNameNode) { [string]$publisherDisplayNameNode.InnerText } else { "" }
+        DisplayName          = if ($null -ne $displayNameNode) { [string]$displayNameNode.InnerText } else { "" }
+    }
+}
+
+function Assert-CodexDesktopMsixPackage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedPackageMoniker
+    )
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would verify Codex Desktop MSIX package identity and signature: $Path"
+        return
+    }
+
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    if ($null -eq $signature -or [string]$signature.Status -ne "Valid" -or $null -eq $signature.SignerCertificate) {
+        $status = if ($null -ne $signature) { [string]$signature.Status } else { "missing" }
+        throw "Invalid Authenticode signature for Codex Desktop MSIX. Status: $status"
+    }
+
+    $subject = [string]$signature.SignerCertificate.Subject
+    $manifest = Get-MsixManifestInfo -Path $Path
+
+    if ($manifest.Name -ne "OpenAI.Codex") {
+        throw "Unexpected MSIX package identity. Expected OpenAI.Codex, got $($manifest.Name)."
+    }
+
+    if ($manifest.Publisher -ne $subject) {
+        throw "MSIX publisher does not match signer. Manifest publisher: $($manifest.Publisher). Signer: $subject."
+    }
+
+    if ($ExpectedPackageMoniker -notlike "OpenAI.Codex_*" -or $ExpectedPackageMoniker -notmatch "_$($manifest.ProcessorArchitecture)`__") {
+        throw "Resolved package moniker does not match MSIX manifest architecture. Moniker: $ExpectedPackageMoniker. Manifest architecture: $($manifest.ProcessorArchitecture)."
+    }
+
+    Write-Ok "Verified Codex Desktop MSIX: $($manifest.Name) $($manifest.Version), signer $subject"
+}
+
 function Invoke-RestJson {
     param([Parameter(Mandatory = $true)][string]$Uri)
 
@@ -1983,7 +2079,7 @@ function Install-CodexDesktopDirectMsix {
         }
     }
 
-    Assert-AuthenticodeSignature -Path $msixPath -ExpectedSubjectPattern "OpenAI|Microsoft"
+    Assert-CodexDesktopMsixPackage -Path $msixPath -ExpectedPackageMoniker $resolved.PackageMoniker
     Enable-AppxTrustedPackageInstall
 
     $scriptText = @"
@@ -2192,12 +2288,26 @@ function Ensure-Wsl {
         Write-Ok "WSL distro is installed: $WslDistro"
     } else {
         Write-Info "Installing WSL distro: $WslDistro"
+        $distroInstallError = $null
         try {
             Invoke-NativeCommand -FilePath $wslExe -Arguments @("--install", "--web-download", "-d", $WslDistro, "--no-launch") -AllowedExitCodes @(0) | Out-Null
         } catch {
-            Write-WarnLine "wsl --install --web-download failed, retrying normal WSL install."
-            Invoke-NativeCommand -FilePath $wslExe -Arguments @("--install", "-d", $WslDistro, "--no-launch") -AllowedExitCodes @(0) | Out-Null
+            $distroInstallError = $_.Exception.Message
+            Write-WarnLine "wsl --install --web-download failed, retrying normal WSL install: $distroInstallError"
+            try {
+                Invoke-NativeCommand -FilePath $wslExe -Arguments @("--install", "-d", $WslDistro, "--no-launch") -AllowedExitCodes @(0) | Out-Null
+                $distroInstallError = $null
+            } catch {
+                $distroInstallError = $_.Exception.Message
+            }
         }
+
+        if (-not [string]::IsNullOrWhiteSpace($distroInstallError)) {
+            Write-WarnLine "WSL distro install did not complete automatically: $distroInstallError"
+            Add-DeferredAction "Install $WslDistro manually from an elevated PowerShell with: wsl --install -d $WslDistro"
+            return
+        }
+
         $script:WslDistroInstalledThisRun = $true
         Add-DeferredAction "Launch $WslDistro once, create the Linux user, then rerun this script to install Codex CLI inside WSL."
         Write-Ok "WSL distro install command completed. First launch may still ask for a Linux username."
