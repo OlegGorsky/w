@@ -68,6 +68,11 @@ foreach ($requiredFunction in @(
     "Install-VcRedist",
     "Get-CodexCommand",
     "Get-CodexCommandVersion",
+    "Get-CodexDesktopPackageText",
+    "Invoke-CodexDesktopWingetInstall",
+    "Invoke-CodexDesktopStoreInstaller",
+    "Wait-CodexDesktopPackage",
+    "Assert-AuthenticodeSignature",
     "Repair-WingetSources",
     "Get-WindowsOptionalFeatureState",
     "Test-WindowsOptionalFeatureEnabled",
@@ -86,9 +91,14 @@ Assert-Contains -Haystack $content -Needle 'Windows 10 2004' -Message "WSL suppo
 Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Store policy writes must be gated by RepairStorePolicies."
 Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
 Assert-Contains -Haystack $content -Needle 'ProgramFiles "PowerShell"' -Message "pwsh detection must search Program Files, not only PATH."
+Assert-Contains -Haystack $content -Needle 'https://get.microsoft.com/installer/download' -Message "Codex Desktop fallback must use the official Microsoft Store web installer."
+Assert-Contains -Haystack $content -Needle '--silent' -Message "Official Store installer fallback must run in silent mode."
+Assert-Contains -Haystack $content -Needle 'Microsoft Corporation' -Message "Official Store installer fallback must verify Microsoft Authenticode signer."
+Assert-Contains -Haystack $content -Needle 'CanTryStoreInstaller' -Message "Windows support info must model the official Store web installer path."
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."
 Assert-NotContains -Haystack $content -Needle '-Type DWord' -Message "Set-ItemProperty must not use unsupported -Type DWord."
+Assert-NotContains -Haystack $content -Needle 'Wangnov' -Message "Script must not use third-party Codex Desktop mirrors."
 
 Write-Host "All static setup checks passed."

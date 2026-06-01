@@ -21,13 +21,20 @@ It installs or repairs:
 - Microsoft Visual C++ Redistributable
 - Codex CLI for Windows
 - Microsoft Store/App Installer/winget where supported
-- Codex Desktop from Microsoft Store
+- Codex Desktop from official Microsoft Store paths
 - WSL/Ubuntu
 - Codex CLI inside WSL after the distro is initialized
 
-On Windows Server, the script performs the CLI-oriented setup. Microsoft Store
-apps are not installed by this script on Server editions, so Codex Desktop will
-not appear in Start there.
+Codex Desktop is installed only through official Microsoft Store infrastructure:
+`winget -s msstore` where available, then Microsoft's official Store web
+installer for the Codex product ID (`9PLM9XGG6VKS`). The script does not use
+third-party MSIX mirrors.
+
+On Windows Server 2022 and older, Microsoft Store/App Installer support is not
+the normal desktop-client path. The script will still try the official Microsoft
+Store web installer and will fail clearly if Microsoft blocks the install. For a
+fully supported Desktop setup, use Windows 10/11 client or another Windows build
+where Microsoft App Installer/Store installs are supported.
 
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 

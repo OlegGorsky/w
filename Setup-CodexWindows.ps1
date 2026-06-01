@@ -260,6 +260,8 @@ $script:Results = New-Object System.Collections.Generic.List[object]
 $script:DeferredActions = New-Object System.Collections.Generic.List[string]
 $script:TempRoot = Join-Path $env:TEMP ("codex-windows-setup-" + [Guid]::NewGuid().ToString("N"))
 $script:LogPath = Join-Path $env:TEMP ("codex-windows-setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+$script:CodexDesktopStoreProductId = "9PLM9XGG6VKS"
+$script:CodexDesktopStoreInstallerUrl = "https://get.microsoft.com/installer/download/$($script:CodexDesktopStoreProductId)?cid=website_cta_psi"
 
 New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
 try {
@@ -374,6 +376,7 @@ function Get-WindowsSupportInfo {
     $build = [int]$os.BuildNumber
     $version = ConvertTo-VersionSafe $os.Version
     $isServer = [int]$os.ProductType -ne 1
+    $isServer2025OrNewer = $isServer -and $build -ge 26100
     $isWindows11 = $build -ge 22000
 
     return [PSCustomObject]@{
@@ -383,8 +386,9 @@ function Get-WindowsSupportInfo {
         ProductType            = [int]$os.ProductType
         IsServer               = $isServer
         IsWindows11            = $isWindows11
-        SupportsWinget         = (-not $isServer) -and $build -ge 17763
+        SupportsWinget         = (((-not $isServer) -and $build -ge 17763) -or $isServer2025OrNewer)
         SupportsStoreApps      = (-not $isServer) -and $build -ge 17763
+        CanTryStoreInstaller   = $build -ge 17763
         SupportsWslOneCommand  = $build -ge 19041
         SupportsPowerShell7Msi = $build -ge 17763
         SupportsNodeLtsMsi     = $build -ge 17763
@@ -405,7 +409,11 @@ function Assert-WindowsSupport {
     }
 
     if ($support.IsServer) {
-        Write-WarnLine "Windows Server detected. Microsoft Store/Codex Desktop and winget msstore flows may be unavailable; CLI and WSL steps will still be attempted where supported."
+        if ($support.SupportsWinget) {
+            Write-WarnLine "Windows Server detected. Codex Desktop still depends on Microsoft Store/App Installer infrastructure; the script will use only official Microsoft Store paths."
+        } else {
+            Write-WarnLine "Windows Server detected. Windows Server 2022 and older do not have the normal Microsoft Store/App Installer path for Codex Desktop; the script will try the official Microsoft Store web installer and fail clearly if Microsoft blocks the install."
+        }
     }
 
     if (-not $support.SupportsWslOneCommand) {
@@ -613,6 +621,35 @@ function Invoke-WebDownload {
     try { Unblock-File -Path $OutFile -ErrorAction SilentlyContinue } catch {}
 }
 
+function Assert-AuthenticodeSignature {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string]$ExpectedSubjectPattern = ""
+    )
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would verify Authenticode signature: $Path"
+        return
+    }
+
+    $signature = Get-AuthenticodeSignature -FilePath $Path
+    if ($null -eq $signature -or [string]$signature.Status -ne "Valid") {
+        $status = if ($null -ne $signature) { [string]$signature.Status } else { "missing" }
+        throw "Invalid Authenticode signature for $Path. Status: $status"
+    }
+
+    $subject = ""
+    if ($null -ne $signature.SignerCertificate) {
+        $subject = [string]$signature.SignerCertificate.Subject
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSubjectPattern) -and $subject -notmatch $ExpectedSubjectPattern) {
+        throw "Unexpected signer for $Path. Signer: $subject"
+    }
+
+    Write-Ok "Verified Authenticode signature: $subject"
+}
+
 function Invoke-RestJson {
     param([Parameter(Mandatory = $true)][string]$Uri)
 
@@ -782,6 +819,15 @@ if (`$null -ne `$pkg) {
     } catch {
         return $null
     }
+}
+
+function Get-CodexDesktopPackageText {
+    $desktopPackage = Get-AppxPackageText -PackageName "OpenAI.Codex"
+    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+        $desktopPackage = Get-AppxPackageText -PackageName "*Codex*"
+    }
+
+    return $desktopPackage
 }
 
 function Repair-ExecutionPolicy {
@@ -1276,14 +1322,11 @@ function Install-CodexCli {
     Write-Ok "Codex CLI available: $version"
 }
 
-function Install-CodexDesktop {
-    $support = Get-WindowsSupportInfo
-    if (-not $support.SupportsStoreApps) {
-        Write-WarnLine "Codex Desktop install skipped: Microsoft Store apps are not supported for this OS/edition by this script."
-        Add-DeferredAction "Install Codex Desktop manually on a supported Windows client build if this machine needs the desktop app."
-        return
-    }
+function Invoke-CodexDesktopWingetInstall {
+    param([AllowNull()][string]$ExistingPackageText)
 
+    $storePackageIds = @("9PLM9XGG6VKS", "Codex")
+    $lastWingetError = $null
     $winget = Ensure-Winget
 
     try {
@@ -1293,15 +1336,7 @@ function Install-CodexDesktop {
         Repair-WingetSources -WingetPath $winget
     }
 
-    $desktopPackage = Get-AppxPackageText -PackageName "OpenAI.Codex"
-    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
-        $desktopPackage = Get-AppxPackageText -PackageName "*Codex*"
-    }
-
-    $storePackageIds = @("9PLM9XGG6VKS", "Codex")
-    $lastWingetError = $null
-
-    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+    if ([string]::IsNullOrWhiteSpace($ExistingPackageText)) {
         Write-Info "Codex Desktop AppX package was not found. Installing from Microsoft Store source."
         foreach ($packageId in $storePackageIds) {
             try {
@@ -1354,6 +1389,105 @@ function Install-CodexDesktop {
         if ($null -ne $lastWingetError) {
             Write-WarnLine "winget upgrade did not complete cleanly. This often means no matching Store update was available: $lastWingetError"
         }
+    }
+}
+
+function Wait-CodexDesktopPackage {
+    param([int]$TimeoutSeconds = 120)
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would wait for Codex Desktop AppX package registration."
+        return "check"
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $desktopPackage = Get-CodexDesktopPackageText
+        if (-not [string]::IsNullOrWhiteSpace($desktopPackage)) {
+            return $desktopPackage
+        }
+
+        Start-Sleep -Seconds 3
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
+}
+
+function Invoke-CodexDesktopStoreInstaller {
+    $support = Get-WindowsSupportInfo
+    if (-not $support.CanTryStoreInstaller) {
+        throw "Official Microsoft Store web installer requires Windows 10 1809/build 17763 or newer."
+    }
+
+    $installerPath = Join-Path $script:TempRoot "Codex Installer.exe"
+    Write-Info "Downloading official Microsoft Store web installer for Codex Desktop."
+    Invoke-WebDownload -Uri $script:CodexDesktopStoreInstallerUrl -OutFile $installerPath
+    Assert-AuthenticodeSignature -Path $installerPath -ExpectedSubjectPattern "Microsoft Corporation"
+
+    Write-Info "Running official Microsoft Store installer in silent mode."
+    $exitCode = Invoke-External -FilePath $installerPath -Arguments "--silent" -AllowedExitCodes @(0, 3010)
+    if ($exitCode -eq 3010) {
+        $script:NeedsReboot = $true
+        Write-WarnLine "Codex Desktop installer reported that a reboot is required."
+    }
+
+    $desktopPackage = Wait-CodexDesktopPackage -TimeoutSeconds 120
+    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+        throw "Official Microsoft Store installer completed, but the OpenAI.Codex AppX package was not registered."
+    }
+}
+
+function Install-CodexDesktop {
+    $support = Get-WindowsSupportInfo
+    $desktopPackage = Get-CodexDesktopPackageText
+    $wingetError = $null
+    $storeInstallerError = $null
+
+    if ($support.SupportsWinget) {
+        try {
+            Invoke-CodexDesktopWingetInstall -ExistingPackageText $desktopPackage
+        } catch {
+            $wingetError = $_.Exception.Message
+            Write-WarnLine "winget/msstore Codex Desktop install failed: $wingetError"
+        }
+    } else {
+        Write-WarnLine "winget/msstore Codex Desktop install is not supported for this OS/edition by this script."
+    }
+
+    $desktopPackage = Get-CodexDesktopPackageText
+    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+        if ($support.IsServer) {
+            Write-WarnLine "Trying the official Microsoft Store web installer. On Windows Server 2022 this may still fail because the Microsoft Store install stack is not normally present."
+        } else {
+            Write-Info "Trying the official Microsoft Store web installer fallback."
+        }
+
+        try {
+            Invoke-CodexDesktopStoreInstaller
+        } catch {
+            $storeInstallerError = $_.Exception.Message
+            Write-WarnLine "Official Microsoft Store web installer failed: $storeInstallerError"
+        }
+    }
+
+    $desktopPackage = Get-CodexDesktopPackageText
+    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+        if ($support.IsServer) {
+            Add-DeferredAction "Codex Desktop requires an official Microsoft Store/App Installer path. For a fully supported setup, run this script on Windows 10/11 client or a Server build where Microsoft App Installer/winget msstore is available."
+        } else {
+            Add-DeferredAction "Open the official Codex Desktop Store page if silent install was blocked by policy: https://get.microsoft.com/installer/download/$($script:CodexDesktopStoreProductId)"
+        }
+
+        $details = @()
+        if (-not [string]::IsNullOrWhiteSpace($wingetError)) {
+            $details += "winget: $wingetError"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($storeInstallerError)) {
+            $details += "Store installer: $storeInstallerError"
+        }
+
+        $detailText = if ($details.Count -gt 0) { " " + ($details -join " | ") } else { "" }
+        throw "Codex Desktop could not be installed by official Microsoft Store paths.$detailText"
     }
 
     Write-Ok "Codex Desktop install/update step completed."

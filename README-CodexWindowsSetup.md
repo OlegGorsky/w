@@ -7,7 +7,7 @@ Terminal, Windows Terminal, or `cmd.exe`. If needed, it relaunches itself throug
 a stable elevated Windows PowerShell host, repairs Microsoft Store/App Installer
 registration, restores `winget`, installs or updates PowerShell 7, Node.js LTS,
 Microsoft Visual C++ Redistributable, Codex CLI for Windows, WSL/Ubuntu, Codex
-CLI inside WSL, and Codex Desktop from Microsoft Store.
+CLI inside WSL, and Codex Desktop from official Microsoft Store paths.
 
 ## Quick Start
 
@@ -66,9 +66,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
   1809/build 17763 or newer; WSL distro setup expects Windows 10 2004/build
   19041 or newer.
 - Windows Server is supported for CLI-oriented setup, but Microsoft Store apps
-  are not installed by this script on Server editions. Codex Desktop will not
-  appear in Start on Windows Server unless it is installed through a supported
-  desktop-client Store/AppX path outside this script.
+  are not part of the normal Server 2022 client-app path. Codex Desktop is
+  attempted only through official Microsoft Store infrastructure: `winget -s
+  msstore` where available, then Microsoft's official Store web installer for
+  product ID `9PLM9XGG6VKS`. The script does not use third-party MSIX mirrors.
+  If Microsoft blocks the install on Windows Server, the Desktop step fails
+  clearly instead of reporting a false success.
 - Store policy registry values are reported by default. They are changed only
   when `-RepairStorePolicies` is passed.
 - WSL distro initialization can still require one interactive first launch to
