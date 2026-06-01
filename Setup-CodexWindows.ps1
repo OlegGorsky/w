@@ -324,6 +324,16 @@ function Add-DeferredAction {
     }
 }
 
+function Remove-DeferredAction {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    for ($index = $script:DeferredActions.Count - 1; $index -ge 0; $index--) {
+        if ([string]$script:DeferredActions[$index] -eq $Message) {
+            $script:DeferredActions.RemoveAt($index)
+        }
+    }
+}
+
 function Set-ComponentWarning {
     param([Parameter(Mandatory = $true)][string]$Message)
 
@@ -999,6 +1009,7 @@ irm $($script:SetupLauncherUrl) | iex
 
         Register-ScheduledTask -TaskName $script:AutoResumeTaskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
         Write-Ok "Setup will continue automatically after the next administrator logon."
+        Remove-DeferredAction "Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL."
         Add-DeferredAction "Reboot Windows; setup is scheduled to continue automatically after the next administrator logon."
     } catch {
         Set-ComponentWarning "Setup auto-resume task could not be registered."

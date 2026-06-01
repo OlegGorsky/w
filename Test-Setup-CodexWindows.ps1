@@ -107,7 +107,8 @@ foreach ($requiredFunction in @(
     "Get-WslImportInstallDirectory",
     "Quote-BashString",
     "Set-ComponentWarning",
-    "Add-DeferredAction"
+    "Add-DeferredAction",
+    "Remove-DeferredAction"
 )) {
     Assert-True -Condition ($functionNames -contains $requiredFunction) -Message "Missing function: $requiredFunction"
 }
@@ -131,6 +132,7 @@ Assert-Contains -Haystack $content -Needle 'New-ScheduledTaskPrincipal' -Message
 Assert-Contains -Haystack $content -Needle 'RunLevel Highest' -Message "Auto-resume task must run elevated."
 Assert-Contains -Haystack $content -Needle 'Setup auto-resume' -Message "Final flow must include setup auto-resume as a component."
 Assert-Contains -Haystack $content -Needle '$SkipAutoResume' -Message "Auto-resume must be disableable."
+Assert-Contains -Haystack $content -Needle 'Remove-DeferredAction "Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL."' -Message "Successful auto-resume must suppress the manual rerun follow-up."
 Assert-Contains -Haystack $content -Needle 'WSL diagnostics:' -Message "WSL failures must log diagnostic context."
 Assert-Contains -Haystack $content -Needle '$script:WslDistroImportedThisRun' -Message "WSL flow must track imported distro setup."
 Assert-Contains -Haystack $content -Needle 'default=%s' -Message "Imported WSL distro must set a default Linux user."
