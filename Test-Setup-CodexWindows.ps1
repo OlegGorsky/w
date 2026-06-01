@@ -73,6 +73,9 @@ foreach ($requiredFunction in @(
     "Invoke-CodexDesktopStoreInstaller",
     "Wait-CodexDesktopPackage",
     "Assert-AuthenticodeSignature",
+    "Join-CommandArguments",
+    "Write-CodexDesktopOfficialPathDiagnostics",
+    "Get-RegistryDwordValue",
     "Repair-WingetSources",
     "Get-WindowsOptionalFeatureState",
     "Test-WindowsOptionalFeatureEnabled",
@@ -93,8 +96,11 @@ Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this scri
 Assert-Contains -Haystack $content -Needle 'ProgramFiles "PowerShell"' -Message "pwsh detection must search Program Files, not only PATH."
 Assert-Contains -Haystack $content -Needle 'https://get.microsoft.com/installer/download' -Message "Codex Desktop fallback must use the official Microsoft Store web installer."
 Assert-Contains -Haystack $content -Needle '--silent' -Message "Official Store installer fallback must run in silent mode."
+Assert-Contains -Haystack $content -Needle '--allusers' -Message "Official Store installer fallback must try all-users silent mode where Store UI is missing."
 Assert-Contains -Haystack $content -Needle 'Microsoft Corporation' -Message "Official Store installer fallback must verify Microsoft Authenticode signer."
 Assert-Contains -Haystack $content -Needle 'CanTryStoreInstaller' -Message "Windows support info must model the official Store web installer path."
+Assert-Contains -Haystack $content -Needle 'DoNotConnectToWindowsUpdateInternetLocations' -Message "Desktop install diagnostics must report Windows Update policy blockers."
+Assert-Contains -Haystack $content -Needle 'installer returned but OpenAI.Codex AppX package was not registered' -Message "Desktop install must fail clearly when Store installer redirects instead of installing."
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."

@@ -557,6 +557,18 @@ function Invoke-External {
     return $process.ExitCode
 }
 
+function Join-CommandArguments {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    return ($Arguments | ForEach-Object {
+        if ($_ -match '\s|"' ) {
+            '"' + ($_ -replace '"', '\"') + '"'
+        } else {
+            $_
+        }
+    }) -join " "
+}
+
 function Invoke-NativeCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -828,6 +840,52 @@ function Get-CodexDesktopPackageText {
     }
 
     return $desktopPackage
+}
+
+function Get-RegistryDwordValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    try {
+        $value = Get-ItemPropertyValue -LiteralPath $Path -Name $Name -ErrorAction Stop
+        if ($null -ne $value) {
+            return [int]$value
+        }
+    } catch {
+    }
+
+    return $null
+}
+
+function Write-CodexDesktopOfficialPathDiagnostics {
+    $support = Get-WindowsSupportInfo
+    $storePackage = Get-AppxPackageText -PackageName "Microsoft.WindowsStore"
+    $appInstallerPackage = Get-AppxPackageText -PackageName "Microsoft.DesktopAppInstaller"
+
+    Write-Info "Official Desktop install diagnostics:"
+    Write-Info "  OS edition: $(if ($support.IsServer) { 'Windows Server' } else { 'Windows client' }), build $($support.Build)"
+    Write-Info "  Microsoft Store package: $(if ($storePackage) { 'present' } else { 'not found' })"
+    Write-Info "  Desktop App Installer package: $(if ($appInstallerPackage) { 'present' } else { 'not found' })"
+    Write-Info "  winget supported by script: $(if ($support.SupportsWinget) { 'yes' } else { 'no' })"
+
+    foreach ($serviceName in @("AppXSvc", "ClipSVC", "InstallService", "wuauserv", "BITS")) {
+        try {
+            $service = Get-Service -Name $serviceName -ErrorAction Stop
+            Write-Info "  service ${serviceName}: $($service.Status), start type: $($service.StartType)"
+        } catch {
+            Write-Info "  service ${serviceName}: not found"
+        }
+    }
+
+    $wuPolicy = Get-RegistryDwordValue -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate" -Name "DoNotConnectToWindowsUpdateInternetLocations"
+    if ($null -ne $wuPolicy) {
+        Write-Info "  Windows Update policy DoNotConnectToWindowsUpdateInternetLocations: $wuPolicy"
+        if ($wuPolicy -ne 0) {
+            Write-WarnLine "Windows Update internet locations are blocked by policy; Microsoft Store all-users install can redirect or fail."
+        }
+    }
 }
 
 function Repair-ExecutionPolicy {
@@ -1424,17 +1482,61 @@ function Invoke-CodexDesktopStoreInstaller {
     Invoke-WebDownload -Uri $script:CodexDesktopStoreInstallerUrl -OutFile $installerPath
     Assert-AuthenticodeSignature -Path $installerPath -ExpectedSubjectPattern "Microsoft Corporation"
 
-    Write-Info "Running official Microsoft Store installer in silent mode."
-    $exitCode = Invoke-External -FilePath $installerPath -Arguments "--silent" -AllowedExitCodes @(0, 3010)
-    if ($exitCode -eq 3010) {
-        $script:NeedsReboot = $true
-        Write-WarnLine "Codex Desktop installer reported that a reboot is required."
+    Write-CodexDesktopOfficialPathDiagnostics
+
+    $attempts = New-Object System.Collections.Generic.List[object]
+    $storePackage = Get-AppxPackageText -PackageName "Microsoft.WindowsStore"
+    $appInstallerPackage = Get-AppxPackageText -PackageName "Microsoft.DesktopAppInstaller"
+
+    if ((Test-IsAdmin) -and ($support.IsServer -or [string]::IsNullOrWhiteSpace($storePackage) -or [string]::IsNullOrWhiteSpace($appInstallerPackage))) {
+        $attempts.Add([PSCustomObject]@{
+            Label          = "all-users silent mode"
+            Arguments      = @("--silent", "--allusers")
+            TimeoutSeconds = 90
+        }) | Out-Null
     }
 
-    $desktopPackage = Wait-CodexDesktopPackage -TimeoutSeconds 120
-    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
-        throw "Official Microsoft Store installer completed, but the OpenAI.Codex AppX package was not registered."
+    if (-not $support.IsServer -or -not [string]::IsNullOrWhiteSpace($storePackage) -or -not [string]::IsNullOrWhiteSpace($appInstallerPackage)) {
+        $attempts.Add([PSCustomObject]@{
+            Label          = "per-user silent mode"
+            Arguments      = @("--silent")
+            TimeoutSeconds = 120
+        }) | Out-Null
     }
+
+    if ($attempts.Count -eq 0) {
+        throw "Official Microsoft Store installer cannot run non-interactively here because this Server build has no Store/App Installer package and the script is not elevated for all-users install."
+    }
+
+    $attemptErrors = New-Object System.Collections.Generic.List[string]
+    foreach ($attempt in $attempts) {
+        $argumentText = Join-CommandArguments -Arguments ([string[]]$attempt.Arguments)
+        Write-Info "Running official Microsoft Store installer in $($attempt.Label): $argumentText"
+
+        try {
+            $exitCode = Invoke-External -FilePath $installerPath -Arguments $argumentText -AllowedExitCodes @(0, 3010)
+            if ($exitCode -eq 3010) {
+                $script:NeedsReboot = $true
+                Write-WarnLine "Codex Desktop installer reported that a reboot is required."
+            }
+        } catch {
+            $attemptErrors.Add("$($attempt.Label): $($_.Exception.Message)") | Out-Null
+            continue
+        }
+
+        $desktopPackage = Wait-CodexDesktopPackage -TimeoutSeconds ([int]$attempt.TimeoutSeconds)
+        if (-not [string]::IsNullOrWhiteSpace($desktopPackage)) {
+            return
+        }
+
+        $attemptErrors.Add("$($attempt.Label): installer returned but OpenAI.Codex AppX package was not registered") | Out-Null
+    }
+
+    if ($attemptErrors.Count -gt 0) {
+        throw "Official Microsoft Store installer could not register Codex Desktop. " + ($attemptErrors -join " | ")
+    }
+
+    throw "Official Microsoft Store installer completed, but the OpenAI.Codex AppX package was not registered."
 }
 
 function Install-CodexDesktop {

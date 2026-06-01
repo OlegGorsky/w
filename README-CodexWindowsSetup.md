@@ -69,9 +69,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
   are not part of the normal Server 2022 client-app path. Codex Desktop is
   attempted only through official Microsoft Store infrastructure: `winget -s
   msstore` where available, then Microsoft's official Store web installer for
-  product ID `9PLM9XGG6VKS`. The script does not use third-party MSIX mirrors.
-  If Microsoft blocks the install on Windows Server, the Desktop step fails
-  clearly instead of reporting a false success.
+  product ID `9PLM9XGG6VKS`. Where Store UI is missing, the installer is tried
+  in official elevated `--silent --allusers` mode. The script does not use
+  third-party MSIX mirrors. If Microsoft blocks the install on Windows Server,
+  the Desktop step fails clearly instead of reporting a false success.
 - Store policy registry values are reported by default. They are changed only
   when `-RepairStorePolicies` is passed.
 - WSL distro initialization can still require one interactive first launch to

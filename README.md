@@ -27,8 +27,9 @@ It installs or repairs:
 
 Codex Desktop is installed only through official Microsoft Store infrastructure:
 `winget -s msstore` where available, then Microsoft's official Store web
-installer for the Codex product ID (`9PLM9XGG6VKS`). The script does not use
-third-party MSIX mirrors.
+installer for the Codex product ID (`9PLM9XGG6VKS`). Where Store UI is missing,
+the installer is tried in official elevated `--silent --allusers` mode. The
+script does not use third-party MSIX mirrors.
 
 On Windows Server 2022 and older, Microsoft Store/App Installer support is not
 the normal desktop-client path. The script will still try the official Microsoft
