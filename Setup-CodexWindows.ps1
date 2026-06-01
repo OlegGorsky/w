@@ -260,6 +260,7 @@ $script:WslDistroInstalledThisRun = $false
 $script:WslDistroImportedThisRun = $false
 $script:Results = New-Object System.Collections.Generic.List[object]
 $script:DeferredActions = New-Object System.Collections.Generic.List[string]
+$script:CurrentComponentWarning = ""
 $script:TempRoot = Join-Path $env:TEMP ("codex-windows-setup-" + [Guid]::NewGuid().ToString("N"))
 $script:LogPath = Join-Path $env:TEMP ("codex-windows-setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
 $script:CodexDesktopStoreProductId = "9PLM9XGG6VKS"
@@ -317,6 +318,14 @@ function Add-DeferredAction {
 
     if (-not [string]::IsNullOrWhiteSpace($Message)) {
         $script:DeferredActions.Add($Message) | Out-Null
+    }
+}
+
+function Set-ComponentWarning {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    if (-not [string]::IsNullOrWhiteSpace($Message)) {
+        $script:CurrentComponentWarning = $Message
     }
 }
 
@@ -885,6 +894,36 @@ function Test-WindowsOptionalFeatureEnabled {
     return (Get-WindowsOptionalFeatureState -FeatureName $FeatureName) -eq "Enabled"
 }
 
+function Test-WindowsRebootPending {
+    if ($CheckOnly) {
+        return $false
+    }
+
+    $rebootKeys = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired"
+    )
+
+    foreach ($key in $rebootKeys) {
+        try {
+            if (Test-Path -LiteralPath $key) {
+                return $true
+            }
+        } catch {
+        }
+    }
+
+    try {
+        $sessionManager = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name "PendingFileRenameOperations" -ErrorAction SilentlyContinue
+        if ($null -ne $sessionManager -and $null -ne $sessionManager.PendingFileRenameOperations) {
+            return $true
+        }
+    } catch {
+    }
+
+    return $false
+}
+
 function Get-WingetPath {
     $candidates = @()
 
@@ -928,13 +967,20 @@ function Invoke-Component {
     )
 
     Write-Step $Name
+    $script:CurrentComponentWarning = ""
     try {
         & $Body
-        Add-Result -Name $Name -Status "OK" -Detail ""
+        if ([string]::IsNullOrWhiteSpace($script:CurrentComponentWarning)) {
+            Add-Result -Name $Name -Status "OK" -Detail ""
+        } else {
+            Add-Result -Name $Name -Status "WARN" -Detail $script:CurrentComponentWarning
+        }
     } catch {
         $script:HadFailures = $true
         Write-FailLine $_.Exception.Message
         Add-Result -Name $Name -Status "FAILED" -Detail $_.Exception.Message
+    } finally {
+        $script:CurrentComponentWarning = ""
     }
 }
 
@@ -2188,6 +2234,21 @@ function Get-WslDistroNames {
     }
 }
 
+function Test-WslEngineAvailable {
+    param([string]$WslPath = "wsl.exe")
+
+    if ($CheckOnly) {
+        return $true
+    }
+
+    try {
+        $null = & $WslPath -l -q 2>$null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Test-WslDistroInitialized {
     param(
         [Parameter(Mandatory = $true)][string]$WslPath,
@@ -2284,6 +2345,157 @@ printf '[user]\ndefault=%s\n' $quotedUser > /etc/wsl.conf
     }
 }
 
+function Expand-GZipFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would decompress gzip file: $SourcePath"
+        return
+    }
+
+    Add-Type -AssemblyName System.IO.Compression
+    New-Item -ItemType Directory -Path (Split-Path -Parent $DestinationPath) -Force | Out-Null
+
+    $sourceStream = [System.IO.File]::OpenRead($SourcePath)
+    try {
+        $destinationStream = [System.IO.File]::Create($DestinationPath)
+        try {
+            $gzipStream = New-Object System.IO.Compression.GZipStream($sourceStream, [System.IO.Compression.CompressionMode]::Decompress)
+            try {
+                $gzipStream.CopyTo($destinationStream)
+            } finally {
+                $gzipStream.Dispose()
+            }
+        } finally {
+            $destinationStream.Dispose()
+        }
+    } finally {
+        $sourceStream.Dispose()
+    }
+}
+
+function Reset-WslImportInstallDirectory {
+    param([Parameter(Mandatory = $true)][string]$InstallDirectory)
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would prepare WSL import directory: $InstallDirectory"
+        return $InstallDirectory
+    }
+
+    $base = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path $env:LOCALAPPDATA "CodexSetup\WSL"
+    } else {
+        Join-Path $env:ProgramData "CodexSetup\WSL"
+    }
+
+    $baseFullPath = [System.IO.Path]::GetFullPath($base).TrimEnd("\")
+    $installFullPath = [System.IO.Path]::GetFullPath($InstallDirectory).TrimEnd("\")
+
+    if ($installFullPath -ne $baseFullPath -and -not $installFullPath.StartsWith($baseFullPath + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean unexpected WSL import directory outside ${baseFullPath}: $installFullPath"
+    }
+
+    $targetDirectory = $InstallDirectory
+    if (Test-Path -LiteralPath $InstallDirectory) {
+        $existingContent = @(Get-ChildItem -LiteralPath $InstallDirectory -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($existingContent.Count -gt 0) {
+            $parent = Split-Path -Parent $InstallDirectory
+            $leaf = Split-Path -Leaf $InstallDirectory
+            $targetDirectory = Join-Path $parent ("$leaf-retry-" + [Guid]::NewGuid().ToString("N"))
+            Write-WarnLine "WSL import directory is not empty; using a fresh retry directory: $targetDirectory"
+        }
+    }
+
+    New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+    return $targetDirectory
+}
+
+function Invoke-WslDiagnosticCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$WslPath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would run WSL diagnostic: $Label"
+        return
+    }
+
+    try {
+        $output = & $WslPath @Arguments 2>&1
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+        Write-Info "$Label exit code: $exitCode"
+
+        foreach ($line in @($output)) {
+            $text = ([string]$line -replace "`0", "").TrimEnd()
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                Write-Info "  $text"
+            }
+        }
+    } catch {
+        Write-Info "$Label failed: $($_.Exception.Message)"
+    }
+}
+
+function Write-WslDiagnostics {
+    param([Parameter(Mandatory = $true)][string]$WslPath)
+
+    Write-Info "WSL diagnostics:"
+    foreach ($featureName in @("Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform")) {
+        Write-Info "  Optional feature ${featureName}: $(Get-WindowsOptionalFeatureState -FeatureName $featureName)"
+    }
+
+    try {
+        $service = Get-Service -Name "LxssManager" -ErrorAction Stop
+        Write-Info "  LxssManager service: $($service.Status), start type: $($service.StartType)"
+    } catch {
+        Write-Info "  LxssManager service: unavailable ($($_.Exception.Message))"
+    }
+
+    Invoke-WslDiagnosticCommand -WslPath $WslPath -Arguments @("--version") -Label "wsl --version"
+    Invoke-WslDiagnosticCommand -WslPath $WslPath -Arguments @("--status") -Label "wsl --status"
+    Invoke-WslDiagnosticCommand -WslPath $WslPath -Arguments @("-l", "-v") -Label "wsl -l -v"
+}
+
+function Invoke-WslImportAttempt {
+    param(
+        [Parameter(Mandatory = $true)][string]$WslPath,
+        [Parameter(Mandatory = $true)][string]$DistroName,
+        [Parameter(Mandatory = $true)][string]$InstallDirectory,
+        [Parameter(Mandatory = $true)][string]$RootfsPath,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [switch]$UseVersion2
+    )
+
+    if ((Get-WslDistroNames -WslPath $WslPath) -contains $DistroName) {
+        Write-Ok "WSL distro was registered during a previous import attempt: $DistroName"
+        return
+    }
+
+    $attemptInstallDirectory = Reset-WslImportInstallDirectory -InstallDirectory $InstallDirectory
+
+    $arguments = @("--import", $DistroName, $attemptInstallDirectory, $RootfsPath)
+    if ($UseVersion2) {
+        $arguments += @("--version", "2")
+    }
+
+    Write-Info "Trying wsl --import with $Label."
+    try {
+        Invoke-NativeCommand -FilePath $WslPath -Arguments $arguments -AllowedExitCodes @(0) | Out-Null
+    } catch {
+        if ((Get-WslDistroNames -WslPath $WslPath) -contains $DistroName) {
+            Write-WarnLine "wsl --import returned an error, but $DistroName is registered. Continuing."
+            return
+        }
+
+        throw
+    }
+}
+
 function Import-UbuntuWslRootfs {
     param(
         [Parameter(Mandatory = $true)][string]$WslPath,
@@ -2295,24 +2507,62 @@ function Import-UbuntuWslRootfs {
     }
 
     $rootfsUrl = Get-UbuntuWslRootfsUrl
-    $rootfsPath = Join-Path $script:TempRoot "ubuntu-wsl.rootfs.tar.gz"
+    $rootfsGzipPath = Join-Path $script:TempRoot "ubuntu-wsl.rootfs.tar.gz"
+    $rootfsTarPath = Join-Path $script:TempRoot "ubuntu-wsl.rootfs.tar"
     $installDirectory = Get-WslImportInstallDirectory -DistroName $DistroName
+    $attemptErrors = New-Object System.Collections.Generic.List[string]
 
     Write-Info "Downloading official Ubuntu WSL rootfs without Microsoft Store."
-    Invoke-WebDownload -Uri $rootfsUrl -OutFile $rootfsPath
+    Invoke-WebDownload -Uri $rootfsUrl -OutFile $rootfsGzipPath
 
     if ($CheckOnly) {
         Write-Info "[check] Would import $DistroName into WSL from Ubuntu rootfs."
         return
     }
 
-    New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+    $imported = $false
+    $compressedAttempts = @(
+        @{ Label = "compressed rootfs and WSL 2"; Path = $rootfsGzipPath; UseVersion2 = $true },
+        @{ Label = "compressed rootfs and default WSL version"; Path = $rootfsGzipPath; UseVersion2 = $false }
+    )
 
-    try {
-        Invoke-NativeCommand -FilePath $WslPath -Arguments @("--import", $DistroName, $installDirectory, $rootfsPath, "--version", "2") -AllowedExitCodes @(0) | Out-Null
-    } catch {
-        Write-WarnLine "wsl --import --version 2 failed, retrying import without explicit version: $($_.Exception.Message)"
-        Invoke-NativeCommand -FilePath $WslPath -Arguments @("--import", $DistroName, $installDirectory, $rootfsPath) -AllowedExitCodes @(0) | Out-Null
+    foreach ($attempt in $compressedAttempts) {
+        try {
+            Invoke-WslImportAttempt -WslPath $WslPath -DistroName $DistroName -InstallDirectory $installDirectory -RootfsPath $attempt.Path -Label $attempt.Label -UseVersion2:([bool]$attempt.UseVersion2)
+            $imported = $true
+            break
+        } catch {
+            $message = "$($attempt.Label): $($_.Exception.Message)"
+            $attemptErrors.Add($message) | Out-Null
+            Write-WarnLine "wsl --import failed with $($attempt.Label): $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $imported) {
+        Write-Info "Decompressing Ubuntu rootfs for legacy WSL import."
+        Expand-GZipFile -SourcePath $rootfsGzipPath -DestinationPath $rootfsTarPath
+
+        $plainTarAttempts = @(
+            @{ Label = "decompressed tar rootfs and WSL 2"; Path = $rootfsTarPath; UseVersion2 = $true },
+            @{ Label = "decompressed tar rootfs and default WSL version"; Path = $rootfsTarPath; UseVersion2 = $false }
+        )
+
+        foreach ($attempt in $plainTarAttempts) {
+            try {
+                Invoke-WslImportAttempt -WslPath $WslPath -DistroName $DistroName -InstallDirectory $installDirectory -RootfsPath $attempt.Path -Label $attempt.Label -UseVersion2:([bool]$attempt.UseVersion2)
+                $imported = $true
+                break
+            } catch {
+                $message = "$($attempt.Label): $($_.Exception.Message)"
+                $attemptErrors.Add($message) | Out-Null
+                Write-WarnLine "wsl --import failed with $($attempt.Label): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    if (-not $imported) {
+        Write-WslDiagnostics -WslPath $WslPath
+        throw "Ubuntu rootfs import failed after compressed and decompressed tar attempts. $($attemptErrors -join ' | ')"
     }
 
     Initialize-ImportedWslDistro -WslPath $WslPath -DistroName $DistroName -UserName $WslUser
@@ -2327,6 +2577,7 @@ function Ensure-Wsl {
 
     $support = Get-WindowsSupportInfo
     if (-not $support.SupportsWslOneCommand) {
+        Set-ComponentWarning "Windows build is too old for scripted WSL setup."
         Write-WarnLine "WSL install skipped: Windows 10 2004/build 19041 or newer is required for this scripted WSL setup."
         Add-DeferredAction "Upgrade Windows to build 19041+ before installing WSL/Ubuntu and Codex CLI inside WSL."
         return
@@ -2366,8 +2617,20 @@ function Ensure-Wsl {
     }
 
     if ($script:NeedsReboot) {
+        Set-ComponentWarning "Reboot required before WSL distro setup can continue."
         Write-WarnLine "WSL features were enabled and a reboot is required before WSL update/default-version/distro setup."
         return
+    }
+
+    $rebootPending = Test-WindowsRebootPending
+    if ($rebootPending -and -not (Test-WslEngineAvailable -WslPath $wslExe)) {
+        $script:NeedsReboot = $true
+        Set-ComponentWarning "Windows has a pending reboot; WSL setup will continue after reboot."
+        Add-DeferredAction "Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL."
+        Write-WarnLine "Windows reports a pending reboot. Skipping WSL update/default-version/distro setup until after reboot."
+        return
+    } elseif ($rebootPending) {
+        Write-WarnLine "Windows reports a pending reboot, but WSL is responding; continuing WSL setup."
     }
 
     try {
@@ -2399,6 +2662,7 @@ function Ensure-Wsl {
                 return
             } catch {
                 Write-WarnLine "Store-free Ubuntu WSL import failed: $($_.Exception.Message)"
+                Set-ComponentWarning "WSL distro import did not finish automatically."
                 Add-DeferredAction "WSL distro import failed. Check the log, then rerun this script after reboot/network repair."
                 return
             }
@@ -2427,12 +2691,14 @@ function Ensure-Wsl {
                 return
             } catch {
                 Write-WarnLine "Store-free Ubuntu WSL import failed: $($_.Exception.Message)"
+                Set-ComponentWarning "WSL distro install/import did not finish automatically."
                 Add-DeferredAction "Install $WslDistro manually from an elevated PowerShell with: wsl --install -d $WslDistro"
                 return
             }
         }
 
         $script:WslDistroInstalledThisRun = $true
+        Set-ComponentWarning "WSL distro install command completed, but first launch may still need Linux user creation."
         Add-DeferredAction "Launch $WslDistro once, create the Linux user, then rerun this script to install Codex CLI inside WSL."
         Write-Ok "WSL distro install command completed. First launch may still ask for a Linux username."
     }
@@ -2441,6 +2707,7 @@ function Ensure-Wsl {
 function Install-CodexCliInWsl {
     $support = Get-WindowsSupportInfo
     if (-not $support.SupportsWslOneCommand) {
+        Set-ComponentWarning "Windows build is too old for scripted Codex-in-WSL setup."
         Write-WarnLine "Codex-in-WSL install skipped: Windows 10 2004/build 19041 or newer is required for this scripted WSL setup."
         return
     }
@@ -2451,23 +2718,27 @@ function Install-CodexCliInWsl {
     }
 
     if ($script:NeedsReboot) {
+        Set-ComponentWarning "Reboot required before Codex CLI can be installed inside WSL."
         Write-WarnLine "Skipping Codex-in-WSL install until after reboot."
         return
     }
 
     if ($script:WslDistroInstalledThisRun) {
+        Set-ComponentWarning "WSL distro was installed and still needs first-launch initialization."
         Write-WarnLine "Skipping Codex-in-WSL because $WslDistro was installed in this run and still needs first-launch user creation."
         return
     }
 
     $distros = Get-WslDistroNames -WslPath $wslExe
     if ($distros -notcontains $WslDistro) {
+        Set-ComponentWarning "WSL distro '$WslDistro' is not installed yet."
         Write-WarnLine "WSL distro '$WslDistro' is not installed yet. Install/initialize it, then rerun this script."
         Add-DeferredAction "Install and launch $WslDistro once, then rerun this script to install Codex CLI inside WSL."
         return
     }
 
     if (-not (Test-WslDistroInitialized -WslPath $wslExe -DistroName $WslDistro)) {
+        Set-ComponentWarning "WSL distro '$WslDistro' is not initialized yet."
         Write-WarnLine "WSL distro '$WslDistro' is not initialized yet. Open it once, create the Linux user, then rerun this script."
         Add-DeferredAction "Launch $WslDistro once, create the Linux user, then rerun this script to install Codex CLI inside WSL."
         return
@@ -2674,6 +2945,8 @@ function Show-FinalSummary {
 
         if ($result.Status -eq "FAILED") {
             Write-FailLine $line
+        } elseif ($result.Status -eq "WARN") {
+            Write-WarnLine $line
         } else {
             Write-Ok $line
         }

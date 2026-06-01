@@ -89,13 +89,21 @@ foreach ($requiredFunction in @(
     "Repair-WingetSources",
     "Get-WindowsOptionalFeatureState",
     "Test-WindowsOptionalFeatureEnabled",
+    "Test-WindowsRebootPending",
     "Get-WslDistroNames",
+    "Test-WslEngineAvailable",
     "Test-WslDistroInitialized",
     "Import-UbuntuWslRootfs",
     "Initialize-ImportedWslDistro",
+    "Expand-GZipFile",
+    "Reset-WslImportInstallDirectory",
+    "Invoke-WslDiagnosticCommand",
+    "Write-WslDiagnostics",
+    "Invoke-WslImportAttempt",
     "Get-UbuntuWslRootfsUrl",
     "Get-WslImportInstallDirectory",
     "Quote-BashString",
+    "Set-ComponentWarning",
     "Add-DeferredAction"
 )) {
     Assert-True -Condition ($functionNames -contains $requiredFunction) -Message "Missing function: $requiredFunction"
@@ -110,6 +118,11 @@ Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Stor
 Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
 Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
+Assert-Contains -Haystack $content -Needle 'Decompressing Ubuntu rootfs for legacy WSL import.' -Message "WSL fallback must decompress gzip rootfs for legacy import support."
+Assert-Contains -Haystack $content -Needle 'ubuntu-wsl.rootfs.tar' -Message "WSL fallback must retry import with a plain tar rootfs."
+Assert-Contains -Haystack $content -Needle 'Windows has a pending reboot; WSL setup will continue after reboot.' -Message "WSL flow must detect pending reboots before import attempts."
+Assert-Contains -Haystack $content -Needle 'Test-WslEngineAvailable' -Message "Pending reboot handling must not block WSL if the engine is already responding."
+Assert-Contains -Haystack $content -Needle 'WSL diagnostics:' -Message "WSL failures must log diagnostic context."
 Assert-Contains -Haystack $content -Needle '$script:WslDistroImportedThisRun' -Message "WSL flow must track imported distro setup."
 Assert-Contains -Haystack $content -Needle 'default=%s' -Message "Imported WSL distro must set a default Linux user."
 Assert-Contains -Haystack $content -Needle 'Windows Server detected. Using Store-free Ubuntu rootfs import' -Message "Windows Server must avoid interactive Store-backed WSL distro install."
@@ -130,6 +143,8 @@ Assert-Contains -Haystack $content -Needle 'MSIX publisher does not match signer
 Assert-Contains -Haystack $content -Needle 'Unexpected MSIX package identity' -Message "Direct MSIX fallback must validate OpenAI.Codex package identity."
 Assert-Contains -Haystack $content -Needle 'Skipping Microsoft Store web installer on this Server build' -Message "Server builds without winget must not open the Store web installer loop."
 Assert-Contains -Haystack $content -Needle 'WSL distro install did not complete automatically' -Message "WSL distro install failures should become follow-up actions instead of failing the whole component."
+Assert-Contains -Haystack $content -Needle 'Status "WARN"' -Message "Final summary must support warning component results."
+Assert-Contains -Haystack $content -Needle 'Write-WarnLine $line' -Message "Final summary must render warning component results as warnings."
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."

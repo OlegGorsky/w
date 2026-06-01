@@ -81,7 +81,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
   On Windows Server, the script avoids that path when possible: it downloads the
   official Ubuntu 24.04 WSL rootfs from `cloud-images.ubuntu.com`, imports it
   with `wsl --import`, creates the default Linux user, and then continues with
-  Codex CLI inside WSL.
+  Codex CLI inside WSL. If the legacy inbox WSL import path rejects the
+  compressed rootfs, the script decompresses it to a plain `.tar` and retries.
+  If Windows reports a pending reboot after optional-feature changes and WSL is
+  not responding yet, WSL setup is deferred until the next run so users do not
+  land in a broken half-initialized flow.
 - Logs are written to `%TEMP%\codex-windows-setup-*.log`.
 
 ## Local Static Check

@@ -42,7 +42,11 @@ For WSL on Windows Server, the script avoids sending users into Microsoft Store
 for Ubuntu. If `wsl --install -d Ubuntu` is not viable, it downloads the official
 Ubuntu 24.04 WSL rootfs from `cloud-images.ubuntu.com`, imports it with
 `wsl --import`, creates a default Linux user, and then continues with Codex CLI
-inside WSL.
+inside WSL. On older inbox WSL builds it also retries the import with a
+decompressed `.tar` rootfs and logs WSL diagnostics if the import still fails.
+If Windows has a pending reboot after optional-feature changes and WSL is not
+responding yet, WSL setup is deferred until the next run instead of sending
+users through broken import attempts.
 
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 
