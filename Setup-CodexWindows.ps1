@@ -50,6 +50,11 @@ try {
 } catch {
 }
 
+$script:BootstrapOriginalBoundParameters = @{}
+foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+    $script:BootstrapOriginalBoundParameters[$entry.Key] = $entry.Value
+}
+
 function Test-BootstrapIsWindows {
     return $env:OS -eq "Windows_NT"
 }
@@ -84,7 +89,7 @@ function New-BootstrapArgumentList {
     )
 
     $parameters = @{}
-    foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+    foreach ($entry in $script:BootstrapOriginalBoundParameters.GetEnumerator()) {
         $parameters[$entry.Key] = $entry.Value
     }
 

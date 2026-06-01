@@ -39,6 +39,8 @@ function Assert-NotContains {
 
 $resolvedScript = Resolve-Path -LiteralPath $ScriptPath
 $content = Get-Content -LiteralPath $resolvedScript -Raw
+$bootstrapScript = Join-Path (Split-Path -Parent $resolvedScript) "i.ps1"
+$bootstrapContent = Get-Content -LiteralPath $bootstrapScript -Raw
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($resolvedScript, [ref]$tokens, [ref]$errors)
@@ -124,6 +126,11 @@ Assert-Contains -Haystack $content -Needle 'Windows 10 2004' -Message "WSL suppo
 Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Store policy writes must be gated by RepairStorePolicies."
 Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
 Assert-Contains -Haystack $content -Needle 'Join-CommandArguments @("-d", $DistroName, "-u", "root", "--", "sh", "-lc", "exit 0")' -Message "WSL initialization probe must quote arguments reliably on Windows PowerShell 5.1."
+Assert-Contains -Haystack $content -Needle '$script:BootstrapOriginalBoundParameters = @{}' -Message "Bootstrap relaunch must capture script-level bound parameters."
+Assert-Contains -Haystack $content -Needle '$script:BootstrapOriginalBoundParameters.GetEnumerator()' -Message "Bootstrap relaunch must not use the helper function's own parameters as script arguments."
+Assert-NotContains -Haystack $content -Needle 'foreach ($entry in $PSBoundParameters.GetEnumerator()) {
+        $parameters[$entry.Key] = $entry.Value
+    }' -Message "Bootstrap relaunch must not pass internal helper parameters such as ScriptPath or ForceSwitches to the setup script."
 Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
 Assert-Contains -Haystack $content -Needle 'wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -Message "WSL setup must fall back to the official WSL2 kernel update MSI."
@@ -173,6 +180,8 @@ Assert-Contains -Haystack $content -Needle 'WSL distro install did not complete 
 Assert-Contains -Haystack $content -Needle 'Status "WARN"' -Message "Final summary must support warning component results."
 Assert-Contains -Haystack $content -Needle 'Write-WarnLine $line' -Message "Final summary must render warning component results as warnings."
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
+Assert-Contains -Haystack $bootstrapContent -Needle 'Latest setup log:' -Message "Bootstrap launcher must show the latest setup log path on failure."
+Assert-Contains -Haystack $bootstrapContent -Needle 'Get-Content -LiteralPath $latestLog.FullName -Tail 120' -Message "Bootstrap launcher must show useful log tail on failure."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."
 Assert-NotContains -Haystack $content -Needle '-Type DWord' -Message "Set-ItemProperty must not use unsupported -Type DWord."
