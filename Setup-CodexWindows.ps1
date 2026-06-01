@@ -2391,6 +2391,62 @@ function Get-UbuntuWslRootfsUrl {
     return "https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz"
 }
 
+function Get-WslKernelUpdateMsiUrl {
+    $arch = Get-ArchitectureInfo
+    if ($arch.CodexArchitecture -ieq "Arm64") {
+        return "https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_arm64.msi"
+    }
+
+    return "https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi"
+}
+
+function Install-WslKernelUpdatePackage {
+    $arch = Get-ArchitectureInfo
+    $kernelMsiUrl = Get-WslKernelUpdateMsiUrl
+    $kernelMsiPath = Join-Path $script:TempRoot ("wsl-kernel-update-$($arch.CodexArchitecture).msi")
+
+    Write-Info "Installing official WSL2 Linux kernel update package."
+    Invoke-WebDownload -Uri $kernelMsiUrl -OutFile $kernelMsiPath
+
+    if (-not $CheckOnly) {
+        $signature = Get-AuthenticodeSignature -FilePath $kernelMsiPath
+        if ($signature.Status -ne "Valid" -or $null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Subject -notmatch "Microsoft") {
+            throw "WSL kernel update MSI signature is not valid or not signed by Microsoft. Status: $($signature.Status)"
+        }
+    }
+
+    $exitCode = Invoke-External -FilePath "msiexec.exe" -Arguments "/i `"$kernelMsiPath`" /qn /norestart" -AllowedExitCodes @(0, 3010)
+    if ($exitCode -eq 3010) {
+        $script:NeedsReboot = $true
+    }
+
+    Write-Ok "WSL2 Linux kernel update package installed."
+}
+
+function Test-Wsl2VirtualizationAvailable {
+    if ($CheckOnly) {
+        return $true
+    }
+
+    try {
+        $processors = @(Get-CimInstance Win32_Processor -ErrorAction Stop)
+        if ($processors.Count -eq 0) {
+            return $true
+        }
+
+        foreach ($processor in $processors) {
+            if ($processor.SecondLevelAddressTranslationExtensions) {
+                return $true
+            }
+        }
+
+        return $false
+    } catch {
+        Write-WarnLine "Could not inspect CPU virtualization flags for WSL2: $($_.Exception.Message)"
+        return $true
+    }
+}
+
 function Get-WslImportInstallDirectory {
     param([Parameter(Mandatory = $true)][string]$DistroName)
 
@@ -2593,7 +2649,8 @@ function Invoke-WslImportAttempt {
 function Import-UbuntuWslRootfs {
     param(
         [Parameter(Mandatory = $true)][string]$WslPath,
-        [Parameter(Mandatory = $true)][string]$DistroName
+        [Parameter(Mandatory = $true)][string]$DistroName,
+        [switch]$SkipWsl2
     )
 
     if ($DistroName -notmatch "^Ubuntu") {
@@ -2621,10 +2678,11 @@ function Import-UbuntuWslRootfs {
     }
 
     $imported = $false
-    $compressedAttempts = @(
-        @{ Label = "compressed rootfs and WSL 2"; Path = $rootfsGzipPath; UseVersion2 = $true },
-        @{ Label = "compressed rootfs and default WSL version"; Path = $rootfsGzipPath; UseVersion2 = $false }
-    )
+    $compressedAttempts = @()
+    if (-not $SkipWsl2) {
+        $compressedAttempts += @{ Label = "compressed rootfs and WSL 2"; Path = $rootfsGzipPath; UseVersion2 = $true }
+    }
+    $compressedAttempts += @{ Label = "compressed rootfs and default WSL version"; Path = $rootfsGzipPath; UseVersion2 = $false }
 
     foreach ($attempt in $compressedAttempts) {
         try {
@@ -2642,10 +2700,11 @@ function Import-UbuntuWslRootfs {
         Write-Info "Decompressing Ubuntu rootfs for legacy WSL import."
         Expand-GZipFile -SourcePath $rootfsGzipPath -DestinationPath $rootfsTarPath
 
-        $plainTarAttempts = @(
-            @{ Label = "decompressed tar rootfs and WSL 2"; Path = $rootfsTarPath; UseVersion2 = $true },
-            @{ Label = "decompressed tar rootfs and default WSL version"; Path = $rootfsTarPath; UseVersion2 = $false }
-        )
+        $plainTarAttempts = @()
+        if (-not $SkipWsl2) {
+            $plainTarAttempts += @{ Label = "decompressed tar rootfs and WSL 2"; Path = $rootfsTarPath; UseVersion2 = $true }
+        }
+        $plainTarAttempts += @{ Label = "decompressed tar rootfs and default WSL version"; Path = $rootfsTarPath; UseVersion2 = $false }
 
         foreach ($attempt in $plainTarAttempts) {
             try {
@@ -2690,6 +2749,7 @@ function Ensure-Wsl {
 
     $wslFeatureEnabledBefore = Test-WindowsOptionalFeatureEnabled -FeatureName "Microsoft-Windows-Subsystem-Linux"
     $vmFeatureEnabledBefore = Test-WindowsOptionalFeatureEnabled -FeatureName "VirtualMachinePlatform"
+    $wsl2VirtualizationAvailable = Test-Wsl2VirtualizationAvailable
 
     if (-not $wslFeatureEnabledBefore) {
         $exitCode = Invoke-External -FilePath "dism.exe" -Arguments "/online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart" -AllowedExitCodes @(0, 3010)
@@ -2700,7 +2760,15 @@ function Ensure-Wsl {
         Write-Ok "WSL optional feature is already enabled."
     }
 
-    if (-not $vmFeatureEnabledBefore) {
+    if (-not $wsl2VirtualizationAvailable) {
+        Set-ComponentWarning "WSL2 virtualization prerequisites are unavailable; using WSL1."
+        Write-WarnLine "WSL2 virtualization prerequisites are unavailable in this VM. Using WSL1 for Ubuntu/Codex instead."
+        if ($vmFeatureEnabledBefore) {
+            Write-Ok "Virtual Machine Platform optional feature is already enabled."
+        } else {
+            Write-WarnLine "Skipping Virtual Machine Platform enablement because WSL2 cannot run without SLAT/nested virtualization."
+        }
+    } elseif (-not $vmFeatureEnabledBefore) {
         $exitCode = Invoke-External -FilePath "dism.exe" -Arguments "/online /enable-feature /featurename:VirtualMachinePlatform /all /norestart" -AllowedExitCodes @(0, 3010)
         if ($exitCode -eq 3010) {
             $script:NeedsReboot = $true
@@ -2710,8 +2778,8 @@ function Ensure-Wsl {
     }
 
     $wslFeatureEnabledAfter = Test-WindowsOptionalFeatureEnabled -FeatureName "Microsoft-Windows-Subsystem-Linux"
-    $vmFeatureEnabledAfter = Test-WindowsOptionalFeatureEnabled -FeatureName "VirtualMachinePlatform"
-    if ((-not $wslFeatureEnabledBefore -or -not $vmFeatureEnabledBefore) -and ($wslFeatureEnabledAfter -or $vmFeatureEnabledAfter)) {
+    $vmFeatureEnabledAfter = if ($wsl2VirtualizationAvailable) { Test-WindowsOptionalFeatureEnabled -FeatureName "VirtualMachinePlatform" } else { $vmFeatureEnabledBefore }
+    if (((-not $wslFeatureEnabledBefore) -and $wslFeatureEnabledAfter) -or ($wsl2VirtualizationAvailable -and (-not $vmFeatureEnabledBefore) -and $vmFeatureEnabledAfter)) {
         $script:NeedsReboot = $true
         Add-DeferredAction "Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL."
     }
@@ -2733,21 +2801,37 @@ function Ensure-Wsl {
         Write-WarnLine "Windows reports a pending reboot, but WSL is responding; continuing WSL setup."
     }
 
-    try {
-        Invoke-NativeCommand -FilePath $wslExe -Arguments @("--update", "--web-download") -AllowedExitCodes @(0) | Out-Null
-    } catch {
-        Write-WarnLine "wsl --update --web-download failed, retrying without --web-download."
+    if ($wsl2VirtualizationAvailable) {
         try {
-            Invoke-NativeCommand -FilePath $wslExe -Arguments @("--update") -AllowedExitCodes @(0) | Out-Null
+            Invoke-NativeCommand -FilePath $wslExe -Arguments @("--update", "--web-download") -AllowedExitCodes @(0) | Out-Null
         } catch {
-            Write-WarnLine "wsl --update failed: $($_.Exception.Message)"
+            Write-WarnLine "wsl --update --web-download failed, retrying without --web-download."
+            try {
+                Invoke-NativeCommand -FilePath $wslExe -Arguments @("--update") -AllowedExitCodes @(0) | Out-Null
+            } catch {
+                Write-WarnLine "wsl --update failed: $($_.Exception.Message)"
+                try {
+                    Install-WslKernelUpdatePackage
+                } catch {
+                    Write-WarnLine "Official WSL2 kernel update package install failed: $($_.Exception.Message)"
+                }
+            }
         }
-    }
 
-    try {
-        Invoke-NativeCommand -FilePath $wslExe -Arguments @("--set-default-version", "2") -AllowedExitCodes @(0) | Out-Null
-    } catch {
-        Write-WarnLine "Could not set WSL default version to 2 yet: $($_.Exception.Message)"
+        if ($script:NeedsReboot) {
+            Set-ComponentWarning "Reboot required after WSL kernel update package install."
+            Add-DeferredAction "Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL."
+            Write-WarnLine "WSL kernel update package requested a reboot before distro setup can continue."
+            return
+        }
+
+        try {
+            Invoke-NativeCommand -FilePath $wslExe -Arguments @("--set-default-version", "2") -AllowedExitCodes @(0) | Out-Null
+        } catch {
+            Write-WarnLine "Could not set WSL default version to 2 yet: $($_.Exception.Message)"
+        }
+    } else {
+        Write-WarnLine "Skipping WSL2 update/default-version steps because this VM does not expose SLAT/nested virtualization."
     }
 
     $distros = Get-WslDistroNames -WslPath $wslExe
@@ -2758,7 +2842,7 @@ function Ensure-Wsl {
         if ($support.IsServer) {
             Write-WarnLine "Windows Server detected. Using Store-free Ubuntu rootfs import instead of interactive wsl --install distro flow."
             try {
-                Import-UbuntuWslRootfs -WslPath $wslExe -DistroName $WslDistro
+                Import-UbuntuWslRootfs -WslPath $wslExe -DistroName $WslDistro -SkipWsl2:(-not $wsl2VirtualizationAvailable)
                 return
             } catch {
                 Write-WarnLine "Store-free Ubuntu WSL import failed: $($_.Exception.Message)"
@@ -2787,7 +2871,7 @@ function Ensure-Wsl {
             Write-WarnLine "WSL distro install did not complete automatically: $distroInstallError"
             Write-WarnLine "Trying Store-free Ubuntu rootfs import fallback."
             try {
-                Import-UbuntuWslRootfs -WslPath $wslExe -DistroName $WslDistro
+                Import-UbuntuWslRootfs -WslPath $wslExe -DistroName $WslDistro -SkipWsl2:(-not $wsl2VirtualizationAvailable)
                 return
             } catch {
                 Write-WarnLine "Store-free Ubuntu WSL import failed: $($_.Exception.Message)"

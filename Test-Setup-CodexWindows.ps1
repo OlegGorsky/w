@@ -105,6 +105,9 @@ foreach ($requiredFunction in @(
     "Invoke-WslImportAttempt",
     "Get-UbuntuWslRootfsUrl",
     "Get-WslImportInstallDirectory",
+    "Get-WslKernelUpdateMsiUrl",
+    "Install-WslKernelUpdatePackage",
+    "Test-Wsl2VirtualizationAvailable",
     "Quote-BashString",
     "Set-ComponentWarning",
     "Add-DeferredAction",
@@ -122,6 +125,12 @@ Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Stor
 Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
 Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
+Assert-Contains -Haystack $content -Needle 'wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -Message "WSL setup must fall back to the official WSL2 kernel update MSI."
+Assert-Contains -Haystack $content -Needle 'WSL kernel update MSI signature is not valid or not signed by Microsoft' -Message "WSL kernel update MSI must be Authenticode-verified."
+Assert-Contains -Haystack $content -Needle 'Install-WslKernelUpdatePackage' -Message "WSL setup must install the kernel package when wsl --update fails."
+Assert-Contains -Haystack $content -Needle 'SecondLevelAddressTranslationExtensions' -Message "WSL setup must inspect SLAT availability before forcing WSL2."
+Assert-Contains -Haystack $content -Needle 'WSL2 virtualization prerequisites are unavailable; using WSL1.' -Message "WSL setup must gracefully fall back to WSL1 on VPS hosts without nested virtualization."
+Assert-Contains -Haystack $content -Needle '-SkipWsl2:(-not $wsl2VirtualizationAvailable)' -Message "WSL rootfs import must skip WSL2 attempts when virtualization is unavailable."
 Assert-Contains -Haystack $content -Needle 'Decompressing Ubuntu rootfs for legacy WSL import.' -Message "WSL fallback must decompress gzip rootfs for legacy import support."
 Assert-Contains -Haystack $content -Needle 'ubuntu-wsl.rootfs.tar' -Message "WSL fallback must retry import with a plain tar rootfs."
 Assert-Contains -Haystack $content -Needle 'This is a large download and may take several minutes on slow connections.' -Message "WSL rootfs download must explain long silent waits."

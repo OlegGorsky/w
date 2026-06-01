@@ -48,6 +48,12 @@ If Windows has a pending reboot after optional-feature changes and WSL is not
 responding yet, WSL setup is deferred until the next run instead of sending
 users through broken import attempts. By default, the script also registers a
 one-time elevated logon task so setup can continue automatically after reboot.
+If `wsl --update` cannot update the WSL2 kernel on Server, the script falls back
+to Microsoft's official WSL2 Linux kernel update MSI and verifies its Microsoft
+signature before installation.
+On VPS hosts where nested virtualization/SLAT is not exposed to Windows, WSL2
+cannot run; the script detects that and uses WSL1 for the Ubuntu/Codex fallback
+instead of looping through doomed WSL2 update/import attempts.
 
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 
