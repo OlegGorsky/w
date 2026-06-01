@@ -7,9 +7,10 @@ try {
 }
 
 $base = "https://oleggorsky.github.io/w"
-$setup = Join-Path $env:TEMP "Setup-CodexWindows.ps1"
+$tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [IO.Path]::GetTempPath() }
+$setup = Join-Path $tempRoot "Setup-CodexWindows.ps1"
 
-$cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$cacheBust = [Guid]::NewGuid().ToString("N")
 Invoke-WebRequest -Uri "$base/Setup-CodexWindows.ps1?cb=$cacheBust" -UseBasicParsing -OutFile $setup
 try {
     Unblock-File -Path $setup -ErrorAction SilentlyContinue
@@ -25,7 +26,7 @@ if ($exitCode -eq 3010) {
     Write-Warning "Setup completed and Windows reported that a reboot is required."
 } elseif ($exitCode -ne 0) {
     try {
-        $latestLog = Get-ChildItem -LiteralPath $env:TEMP -Filter "codex-windows-setup-*.log" -ErrorAction SilentlyContinue |
+        $latestLog = Get-ChildItem -LiteralPath $tempRoot -Filter "codex-windows-setup-*.log" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 

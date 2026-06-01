@@ -44,8 +44,12 @@ $bootstrapContent = Get-Content -LiteralPath $bootstrapScript -Raw
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($resolvedScript, [ref]$tokens, [ref]$errors)
+$bootstrapTokens = $null
+$bootstrapErrors = $null
+$bootstrapAst = [System.Management.Automation.Language.Parser]::ParseFile($bootstrapScript, [ref]$bootstrapTokens, [ref]$bootstrapErrors)
 
 Assert-True -Condition ($errors.Count -eq 0) -Message ("PowerShell parser errors: " + (($errors | ForEach-Object { $_.Message }) -join "; "))
+Assert-True -Condition ($bootstrapErrors.Count -eq 0) -Message ("Bootstrap parser errors: " + (($bootstrapErrors | ForEach-Object { $_.Message }) -join "; "))
 
 $paramBlock = $ast.ParamBlock
 Assert-True -Condition ($null -ne $paramBlock) -Message "Script must define a parameter block."
@@ -67,6 +71,7 @@ foreach ($requiredParam in @(
 foreach ($requiredFunction in @(
     "Get-WindowsSupportInfo",
     "Assert-WindowsSupport",
+    "Get-SafeTempPath",
     "Get-PwshCommand",
     "Install-VcRedist",
     "Get-CodexCommand",
@@ -74,6 +79,7 @@ foreach ($requiredFunction in @(
     "Get-CodexDesktopPackageText",
     "Invoke-CodexDesktopWingetInstall",
     "Invoke-CodexDesktopStoreInstaller",
+    "Invoke-WithRetry",
     "Install-CodexDesktopDirectMsix",
     "Resolve-CodexDesktopMicrosoftStoreMsix",
     "Enable-AppxTrustedPackageInstall",
@@ -131,6 +137,11 @@ Assert-Contains -Haystack $content -Needle '$script:BootstrapOriginalBoundParame
 Assert-NotContains -Haystack $content -Needle 'foreach ($entry in $PSBoundParameters.GetEnumerator()) {
         $parameters[$entry.Key] = $entry.Value
     }' -Message "Bootstrap relaunch must not pass internal helper parameters such as ScriptPath or ForceSwitches to the setup script."
+Assert-Contains -Haystack $content -Needle '$script:SetupTempPath = Get-SafeTempPath' -Message "Setup must tolerate missing TEMP by using a safe temp path helper."
+Assert-Contains -Haystack $content -Needle 'if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA))' -Message "LOCALAPPDATA-dependent paths must be guarded for service/minimal environments."
+Assert-Contains -Haystack $content -Needle 'Invoke-WithRetry -Description "Download $Uri"' -Message "Downloads must retry transient network/CDN failures."
+Assert-Contains -Haystack $content -Needle 'Invoke-WithRetry -Description "$Method $Uri"' -Message "HTTP text requests must retry transient network/CDN failures."
+Assert-Contains -Haystack $content -Needle 'Invoke-WithRetry -Description "GET $Uri"' -Message "REST JSON requests must retry transient network/CDN failures."
 Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
 Assert-Contains -Haystack $content -Needle 'wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -Message "WSL setup must fall back to the official WSL2 kernel update MSI."
@@ -182,9 +193,35 @@ Assert-Contains -Haystack $content -Needle 'Write-WarnLine $line' -Message "Fina
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
 Assert-Contains -Haystack $bootstrapContent -Needle 'Latest setup log:' -Message "Bootstrap launcher must show the latest setup log path on failure."
 Assert-Contains -Haystack $bootstrapContent -Needle 'Get-Content -LiteralPath $latestLog.FullName -Tail 120' -Message "Bootstrap launcher must show useful log tail on failure."
+Assert-Contains -Haystack $bootstrapContent -Needle '$cacheBust = [Guid]::NewGuid().ToString("N")' -Message "Bootstrap cache-busting must work on old Windows PowerShell/.NET builds."
+Assert-NotContains -Haystack $bootstrapContent -Needle 'ToUnixTimeSeconds' -Message "Bootstrap must avoid newer DateTimeOffset APIs for old Windows PowerShell/.NET builds."
+Assert-NotContains -Haystack $bootstrapContent -Needle 'raw/main' -Message "Bootstrap must avoid stale raw.githubusercontent.com main cache for setup download."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."
 Assert-NotContains -Haystack $content -Needle '-Type DWord' -Message "Set-ItemProperty must not use unsupported -Type DWord."
 Assert-NotContains -Haystack $content -Needle 'Wangnov' -Message "Script must not use third-party Codex Desktop mirrors."
+
+$bootstrapFunctionAsts = $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        @("ConvertTo-BootstrapArgument", "New-BootstrapArgumentList") -contains $node.Name
+}, $true)
+
+foreach ($functionAst in $bootstrapFunctionAsts) {
+    Invoke-Expression $functionAst.Extent.Text
+}
+
+$script:BootstrapOriginalBoundParameters = @{
+    CheckOnly = [System.Management.Automation.SwitchParameter]::Present
+    WslDistro = "Ubuntu Preview"
+    WslUser = "codex"
+}
+$bootstrapArgumentList = New-BootstrapArgumentList -ScriptPath "C:\Temp\Setup-CodexWindows.ps1" -ForceSwitches @("NoAdminRelaunch", "NoHostRelaunch")
+Assert-Contains -Haystack $bootstrapArgumentList -Needle '-CheckOnly' -Message "Bootstrap relaunch must preserve user script switches."
+Assert-Contains -Haystack $bootstrapArgumentList -Needle '-WslDistro "Ubuntu Preview"' -Message "Bootstrap relaunch must preserve user string parameters."
+Assert-Contains -Haystack $bootstrapArgumentList -Needle '-NoAdminRelaunch' -Message "Bootstrap relaunch must add forced switches."
+Assert-Contains -Haystack $bootstrapArgumentList -Needle '-NoHostRelaunch' -Message "Bootstrap relaunch must add forced host switches."
+Assert-NotContains -Haystack $bootstrapArgumentList -Needle '-ScriptPath' -Message "Bootstrap relaunch must not leak helper-only ScriptPath."
+Assert-NotContains -Haystack $bootstrapArgumentList -Needle '-ForceSwitches' -Message "Bootstrap relaunch must not leak helper-only ForceSwitches."
 
 Write-Host "All static setup checks passed."

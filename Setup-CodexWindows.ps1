@@ -259,6 +259,14 @@ function Initialize-BootstrapHost {
 
 Initialize-BootstrapHost
 
+function Get-SafeTempPath {
+    if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
+        return $env:TEMP
+    }
+
+    return [IO.Path]::GetTempPath()
+}
+
 $script:StartedAt = Get-Date
 $script:NeedsReboot = $false
 $script:HadFailures = $false
@@ -267,8 +275,9 @@ $script:WslDistroImportedThisRun = $false
 $script:Results = New-Object System.Collections.Generic.List[object]
 $script:DeferredActions = New-Object System.Collections.Generic.List[string]
 $script:CurrentComponentWarning = ""
-$script:TempRoot = Join-Path $env:TEMP ("codex-windows-setup-" + [Guid]::NewGuid().ToString("N"))
-$script:LogPath = Join-Path $env:TEMP ("codex-windows-setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+$script:SetupTempPath = Get-SafeTempPath
+$script:TempRoot = Join-Path $script:SetupTempPath ("codex-windows-setup-" + [Guid]::NewGuid().ToString("N"))
+$script:LogPath = Join-Path $script:SetupTempPath ("codex-windows-setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
 $script:CodexDesktopStoreProductId = "9PLM9XGG6VKS"
 $script:CodexDesktopStoreInstallerUrl = "https://get.microsoft.com/installer/download/$($script:CodexDesktopStoreProductId)?cid=website_cta_psi"
 $script:CodexDesktopStoreUpdateManifestUrl = "https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json"
@@ -647,6 +656,27 @@ function Invoke-WindowsPowerShell {
     }
 }
 
+function Invoke-WithRetry {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Operation,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [int]$Attempts = 3
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            return & $Operation
+        } catch {
+            if ($attempt -ge $Attempts) {
+                throw
+            }
+
+            Write-WarnLine "$Description failed on attempt $attempt/${Attempts}: $($_.Exception.Message)"
+            Start-Sleep -Seconds ([Math]::Min(10, 2 * $attempt))
+        }
+    }
+}
+
 function Invoke-WebDownload {
     param(
         [Parameter(Mandatory = $true)][string]$Uri,
@@ -659,7 +689,9 @@ function Invoke-WebDownload {
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $OutFile) -Force | Out-Null
-    Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -Headers @{ "User-Agent" = "CodexWindowsSetup/1.0" }
+    Invoke-WithRetry -Description "Download $Uri" -Operation {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -Headers @{ "User-Agent" = "CodexWindowsSetup/1.0" }
+    } | Out-Null
     try { Unblock-File -Path $OutFile -ErrorAction SilentlyContinue } catch {}
 }
 
@@ -697,7 +729,9 @@ function Invoke-HttpText {
         $parameters["ContentType"] = $ContentType
     }
 
-    $response = Invoke-WebRequest @parameters
+    $response = Invoke-WithRetry -Description "$Method $Uri" -Operation {
+        Invoke-WebRequest @parameters
+    }
     return [string]$response.Content
 }
 
@@ -829,7 +863,9 @@ function Assert-CodexDesktopMsixPackage {
 function Invoke-RestJson {
     param([Parameter(Mandatory = $true)][string]$Uri)
 
-    return Invoke-RestMethod -Uri $Uri -UseBasicParsing -Headers @{ "User-Agent" = "CodexWindowsSetup/1.0" }
+    return Invoke-WithRetry -Description "GET $Uri" -Operation {
+        Invoke-RestMethod -Uri $Uri -UseBasicParsing -Headers @{ "User-Agent" = "CodexWindowsSetup/1.0" }
+    }
 }
 
 function ConvertTo-VersionSafe {
@@ -878,12 +914,14 @@ function Get-PwshCommand {
         $candidates += $cmd.Source
     }
 
-    $psRoot = Join-Path $env:ProgramFiles "PowerShell"
-    if (Test-Path -LiteralPath $psRoot) {
-        $candidates += @(Get-ChildItem -Path $psRoot -Directory -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending |
-            ForEach-Object { Join-Path $_.FullName "pwsh.exe" } |
-            Where-Object { Test-Path -LiteralPath $_ })
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $psRoot = Join-Path $env:ProgramFiles "PowerShell"
+        if (Test-Path -LiteralPath $psRoot) {
+            $candidates += @(Get-ChildItem -Path $psRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                ForEach-Object { Join-Path $_.FullName "pwsh.exe" } |
+                Where-Object { Test-Path -LiteralPath $_ })
+        }
     }
 
     foreach ($candidate in ($candidates | Select-Object -Unique)) {
@@ -948,7 +986,7 @@ function Get-SetupAutoResumeScriptPath {
     } elseif (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         Join-Path $env:LOCALAPPDATA "CodexSetup"
     } else {
-        Join-Path $env:TEMP "CodexSetup"
+        Join-Path (Get-SafeTempPath) "CodexSetup"
     }
 
     return Join-Path $base "Resume-CodexWindowsSetup.ps1"
@@ -1031,7 +1069,9 @@ function Get-WingetPath {
         $candidates += $cmd.Source
     }
 
-    $candidates += Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidates += Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"
+    }
 
     foreach ($candidate in ($candidates | Select-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $candidate)) {
@@ -1756,7 +1796,9 @@ Add-AppxPackage -Path $(Quote-PSString $bundlePath)
     $winget = Get-WingetPath
     if ($null -eq $winget) {
         Write-WarnLine "Desktop App Installer was installed, but winget is not visible in this session yet."
-        Add-CurrentProcessPath -Entry (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps")
+        if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            Add-CurrentProcessPath -Entry (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps")
+        }
         $winget = Get-WingetPath
     }
 
@@ -1779,11 +1821,13 @@ function Install-PowerShell7 {
     }
 
     $programFilesPwsh = @()
-    $psRoot = Join-Path $env:ProgramFiles "PowerShell"
-    if (Test-Path -LiteralPath $psRoot) {
-        $programFilesPwsh = @(Get-ChildItem -Path $psRoot -Directory -ErrorAction SilentlyContinue |
-            ForEach-Object { Join-Path $_.FullName "pwsh.exe" } |
-            Where-Object { Test-Path -LiteralPath $_ })
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $psRoot = Join-Path $env:ProgramFiles "PowerShell"
+        if (Test-Path -LiteralPath $psRoot) {
+            $programFilesPwsh = @(Get-ChildItem -Path $psRoot -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName "pwsh.exe" } |
+                Where-Object { Test-Path -LiteralPath $_ })
+        }
     }
 
     $bestInstalledVersion = $null
@@ -1867,8 +1911,10 @@ function Install-NodeLts {
 
     if ($null -ne $currentVersion -and $currentVersion -ge $latestVersion) {
         Write-Ok "Node.js is current enough: $currentText"
-        $nodeDir = Join-Path $env:ProgramFiles "nodejs"
-        Add-CurrentProcessPath -Entry $nodeDir
+        if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+            $nodeDir = Join-Path $env:ProgramFiles "nodejs"
+            Add-CurrentProcessPath -Entry $nodeDir
+        }
         return
     }
 
@@ -1900,8 +1946,10 @@ function Install-NodeLts {
         $script:NeedsReboot = $true
     }
 
-    $nodeDir = Join-Path $env:ProgramFiles "nodejs"
-    Add-CurrentProcessPath -Entry $nodeDir
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $nodeDir = Join-Path $env:ProgramFiles "nodejs"
+        Add-CurrentProcessPath -Entry $nodeDir
+    }
     Write-Ok "Node.js LTS installer completed."
 }
 
@@ -2036,10 +2084,14 @@ function Install-CodexCli {
         return
     }
 
-    $codexBin = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
-    $npmBin = Join-Path $env:APPDATA "npm"
-    Add-UserPath -Entry $codexBin -Prepend
-    Add-UserPath -Entry $npmBin
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $codexBin = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
+        Add-UserPath -Entry $codexBin -Prepend
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        $npmBin = Join-Path $env:APPDATA "npm"
+        Add-UserPath -Entry $npmBin
+    }
 
     $version = Get-CodexCommandVersion
     if ([string]::IsNullOrWhiteSpace($version)) {
@@ -2477,8 +2529,10 @@ function Get-WslImportInstallDirectory {
 
     $base = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         Join-Path $env:LOCALAPPDATA "CodexSetup\WSL"
-    } else {
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
         Join-Path $env:ProgramData "CodexSetup\WSL"
+    } else {
+        Join-Path (Get-SafeTempPath) "CodexSetup\WSL"
     }
 
     $safeName = ($DistroName -replace '[^A-Za-z0-9_.-]', '-')
@@ -2562,8 +2616,10 @@ function Reset-WslImportInstallDirectory {
 
     $base = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         Join-Path $env:LOCALAPPDATA "CodexSetup\WSL"
-    } else {
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
         Join-Path $env:ProgramData "CodexSetup\WSL"
+    } else {
+        Join-Path (Get-SafeTempPath) "CodexSetup\WSL"
     }
 
     $baseFullPath = [System.IO.Path]::GetFullPath($base).TrimEnd("\")
