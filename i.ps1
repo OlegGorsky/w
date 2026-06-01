@@ -12,7 +12,8 @@ $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else
 $setup = Join-Path $tempRoot "Setup-CodexWindows.ps1"
 
 $cacheBust = [Guid]::NewGuid().ToString("N")
-Invoke-WebRequest -Uri "$setupUrl?cb=$cacheBust" -UseBasicParsing -OutFile $setup
+$setupRequestUrl = "{0}?cb={1}" -f $setupUrl, $cacheBust
+Invoke-WebRequest -Uri $setupRequestUrl -UseBasicParsing -OutFile $setup
 try {
     Unblock-File -Path $setup -ErrorAction SilentlyContinue
 } catch {

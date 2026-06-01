@@ -37,6 +37,26 @@ function Assert-NotContains {
     Assert-True -Condition (-not $Haystack.Contains($Needle)) -Message $Message
 }
 
+function Assert-NoQuestionMarkVariableInterpolation {
+    param(
+        [Parameter(Mandatory = $true)][System.Management.Automation.Language.Ast]$Ast,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $badVariables = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst] -and
+            $node.VariablePath.UserPath -match '^[A-Za-z_][A-Za-z0-9_]*\?$'
+    }, $true))
+
+    if ($badVariables.Count -gt 0) {
+        $details = ($badVariables | ForEach-Object {
+            "{0}:{1}: {2}" -f $Path, $_.Extent.StartLineNumber, $_.Extent.Text
+        }) -join "; "
+        throw "Suspicious PowerShell interpolation before '?'. Use `${name}` or -f formatting. $details"
+    }
+}
+
 $resolvedScript = Resolve-Path -LiteralPath $ScriptPath
 $content = Get-Content -LiteralPath $resolvedScript -Raw
 $bootstrapScript = Join-Path (Split-Path -Parent $resolvedScript) "i.ps1"
@@ -50,6 +70,8 @@ $bootstrapAst = [System.Management.Automation.Language.Parser]::ParseFile($boots
 
 Assert-True -Condition ($errors.Count -eq 0) -Message ("PowerShell parser errors: " + (($errors | ForEach-Object { $_.Message }) -join "; "))
 Assert-True -Condition ($bootstrapErrors.Count -eq 0) -Message ("Bootstrap parser errors: " + (($bootstrapErrors | ForEach-Object { $_.Message }) -join "; "))
+Assert-NoQuestionMarkVariableInterpolation -Ast $ast -Path $resolvedScript
+Assert-NoQuestionMarkVariableInterpolation -Ast $bootstrapAst -Path $bootstrapScript
 
 $paramBlock = $ast.ParamBlock
 Assert-True -Condition ($null -ne $paramBlock) -Message "Script must define a parameter block."
@@ -196,6 +218,9 @@ Assert-Contains -Haystack $bootstrapContent -Needle 'Get-Content -LiteralPath $l
 Assert-Contains -Haystack $bootstrapContent -Needle '$cacheBust = [Guid]::NewGuid().ToString("N")' -Message "Bootstrap cache-busting must work on old Windows PowerShell/.NET builds."
 Assert-Contains -Haystack $bootstrapContent -Needle '$setupVersion = "' -Message "Bootstrap must pin the setup download to a tested immutable commit."
 Assert-Contains -Haystack $bootstrapContent -Needle 'raw.githubusercontent.com/OlegGorsky/w/$setupVersion/Setup-CodexWindows.ps1' -Message "Bootstrap must download setup from an immutable raw commit URL."
+Assert-Contains -Haystack $bootstrapContent -Needle '$setupRequestUrl = "{0}?cb={1}" -f $setupUrl, $cacheBust' -Message "Bootstrap cache-bust URL must avoid PowerShell variable-name ambiguity before ?."
+Assert-Contains -Haystack $bootstrapContent -Needle 'Invoke-WebRequest -Uri $setupRequestUrl' -Message "Bootstrap must download using the safely formatted cache-bust URL."
+Assert-NotContains -Haystack $bootstrapContent -Needle '"$setupUrl?cb=$cacheBust"' -Message "Bootstrap must not interpolate a variable directly before ? in an expandable string."
 Assert-NotContains -Haystack $bootstrapContent -Needle 'ToUnixTimeSeconds' -Message "Bootstrap must avoid newer DateTimeOffset APIs for old Windows PowerShell/.NET builds."
 Assert-NotContains -Haystack $bootstrapContent -Needle 'raw/main' -Message "Bootstrap must avoid stale raw.githubusercontent.com main cache for setup download."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
@@ -225,5 +250,10 @@ Assert-Contains -Haystack $bootstrapArgumentList -Needle '-NoAdminRelaunch' -Mes
 Assert-Contains -Haystack $bootstrapArgumentList -Needle '-NoHostRelaunch' -Message "Bootstrap relaunch must add forced host switches."
 Assert-NotContains -Haystack $bootstrapArgumentList -Needle '-ScriptPath' -Message "Bootstrap relaunch must not leak helper-only ScriptPath."
 Assert-NotContains -Haystack $bootstrapArgumentList -Needle '-ForceSwitches' -Message "Bootstrap relaunch must not leak helper-only ForceSwitches."
+
+$setupUrl = "https://example.invalid/Setup-CodexWindows.ps1"
+$cacheBust = "abc123"
+$setupRequestUrl = "{0}?cb={1}" -f $setupUrl, $cacheBust
+Assert-True -Condition ($setupRequestUrl -eq "https://example.invalid/Setup-CodexWindows.ps1?cb=abc123") -Message "PowerShell cache-bust URL formatting must preserve the hostname."
 
 Write-Host "All static setup checks passed."
