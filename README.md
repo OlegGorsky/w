@@ -5,6 +5,12 @@ One-command Windows bootstrap for OpenAI Codex tooling.
 Run in Windows PowerShell, PowerShell 7, Windows Terminal, or VS Code Terminal:
 
 ```powershell
+irm https://oleggorsky.github.io/w/i.ps1|iex
+```
+
+Fallback if GitHub Pages is unavailable:
+
+```powershell
 irm https://github.com/OlegGorsky/w/raw/main/i.ps1|iex
 ```
 
