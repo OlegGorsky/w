@@ -1099,6 +1099,114 @@ function Repair-WingetSources {
     Write-Ok "winget source reset --force completed."
 }
 
+function Get-WingetReleaseAsset {
+    param(
+        [Parameter(Mandatory = $true)]$Release,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $asset = @($Release.assets | Where-Object { $_.name -eq $Name } | Select-Object -First 1)
+    if ($asset.Count -eq 0 -or $null -eq $asset[0]) {
+        throw "Could not find $Name in the latest winget release."
+    }
+
+    return $asset[0]
+}
+
+function Get-AppInstallerDependencyArchitecture {
+    $arch = Get-ArchitectureInfo
+    if ($arch.CodexArchitecture -ieq "Arm64") {
+        return "arm64"
+    }
+
+    return "x64"
+}
+
+function Assert-AppInstallerDependencyPackage {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $manifest = Get-MsixManifestInfo -Path $Path
+    $allowedNames = @(
+        "Microsoft.VCLibs.140.00",
+        "Microsoft.VCLibs.140.00.UWPDesktop",
+        "Microsoft.WindowsAppRuntime.1.8"
+    )
+
+    if ($allowedNames -notcontains $manifest.Name) {
+        throw "Unexpected App Installer dependency package identity. Expected Microsoft dependencies, got $($manifest.Name)."
+    }
+
+    if ($manifest.Publisher -notmatch "CN=Microsoft Corporation") {
+        throw "Unexpected App Installer dependency publisher for $($manifest.Name): $($manifest.Publisher)"
+    }
+
+    $expectedArch = Get-AppInstallerDependencyArchitecture
+    if (-not [string]::IsNullOrWhiteSpace($manifest.ProcessorArchitecture) -and
+        $manifest.ProcessorArchitecture -notin @($expectedArch, "neutral")) {
+        throw "Unexpected App Installer dependency architecture for $($manifest.Name): $($manifest.ProcessorArchitecture)"
+    }
+
+    Assert-AuthenticodeSignature -Path $Path -ExpectedSubjectPattern "Microsoft Corporation"
+    return $manifest
+}
+
+function Get-AppInstallerDependencyPathsFromRelease {
+    param([Parameter(Mandatory = $true)]$Release)
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would download and verify Desktop App Installer dependency packages from the official winget release."
+        return @()
+    }
+
+    $dependencyAsset = Get-WingetReleaseAsset -Release $Release -Name "DesktopAppInstaller_Dependencies.zip"
+    $hashAsset = Get-WingetReleaseAsset -Release $Release -Name "DesktopAppInstaller_Dependencies.txt"
+
+    $zipPath = Join-Path $script:TempRoot $dependencyAsset.name
+    $hashPath = Join-Path $script:TempRoot $hashAsset.name
+    Invoke-WebDownload -Uri $dependencyAsset.browser_download_url -OutFile $zipPath
+    Invoke-WebDownload -Uri $hashAsset.browser_download_url -OutFile $hashPath
+
+    $expectedHash = ((Get-Content -LiteralPath $hashPath -Raw) -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace($expectedHash) -or $expectedHash -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "Desktop App Installer dependency hash file did not contain a SHA256 hash."
+    }
+
+    $actualHash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
+    if ($actualHash -ine $expectedHash) {
+        throw "Desktop App Installer dependency zip hash mismatch. Expected $expectedHash, got $actualHash."
+    }
+
+    $extractRoot = Join-Path $script:TempRoot ("DesktopAppInstaller_Dependencies_" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractRoot)
+
+    $dependencyArch = Get-AppInstallerDependencyArchitecture
+    $archRoot = Join-Path $extractRoot $dependencyArch
+    if (-not (Test-Path -LiteralPath $archRoot)) {
+        throw "Desktop App Installer dependency zip did not contain a $dependencyArch folder."
+    }
+
+    $dependencyPaths = @()
+    foreach ($pattern in @(
+        "Microsoft.VCLibs.140.00_*.appx",
+        "Microsoft.VCLibs.140.00.UWPDesktop_*.appx",
+        "Microsoft.WindowsAppRuntime.*.appx"
+    )) {
+        $package = @(Get-ChildItem -LiteralPath $archRoot -Filter $pattern -File -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -First 1)
+        if ($package.Count -eq 0 -or $null -eq $package[0]) {
+            throw "Desktop App Installer dependency was not found in $dependencyArch folder: $pattern"
+        }
+
+        $manifest = Assert-AppInstallerDependencyPackage -Path $package[0].FullName
+        Write-Info "Prepared App Installer dependency: $($manifest.Name) $($manifest.Version)"
+        $dependencyPaths += $package[0].FullName
+    }
+
+    return @($dependencyPaths)
+}
+
 function Invoke-Component {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -1690,6 +1798,27 @@ try {
 "@
 
     Invoke-WindowsPowerShell -ScriptText $scriptText -AllowedExitCodes @(0) | Out-Null
+    if ($CheckOnly) {
+        Write-Info "[check] Would verify Microsoft Store and Desktop App Installer package registration after repair."
+        return
+    }
+
+    $missingPackages = @()
+    if (-not (Get-AppxPackageText -PackageName "Microsoft.WindowsStore")) {
+        $missingPackages += "Microsoft.WindowsStore"
+    }
+
+    if (-not (Get-AppxPackageText -PackageName "Microsoft.DesktopAppInstaller")) {
+        $missingPackages += "Microsoft.DesktopAppInstaller"
+    }
+
+    if ($missingPackages.Count -gt 0) {
+        $message = "Store/App Installer repair left packages missing: $($missingPackages -join ', '). Continuing with official direct installers where possible."
+        Set-ComponentWarning $message
+        Write-WarnLine $message
+        return
+    }
+
     Write-Ok "Store/App Installer repair commands completed."
 }
 
@@ -1764,23 +1893,34 @@ function Ensure-Winget {
     }
 
     $release = Invoke-RestJson -Uri "https://api.github.com/repos/microsoft/winget-cli/releases/latest"
-    $asset = $release.assets |
-        Where-Object { $_.name -eq "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" } |
-        Select-Object -First 1
+    $asset = Get-WingetReleaseAsset -Release $release -Name "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
 
-    if ($null -eq $asset) {
-        throw "Could not find Desktop App Installer msixbundle in the latest winget release."
+    $dependencyPaths = @()
+    try {
+        $dependencyPaths = @(Get-AppInstallerDependencyPathsFromRelease -Release $release)
+    } catch {
+        Write-WarnLine "Could not prepare Desktop App Installer dependencies: $($_.Exception.Message)"
     }
 
     $bundlePath = Join-Path $script:TempRoot $asset.name
     Invoke-WebDownload -Uri $asset.browser_download_url -OutFile $bundlePath
+    $dependencyPathsLiteral = "@()"
+    if ($dependencyPaths.Count -gt 0) {
+        $dependencyPathsLiteral = "@(" + (($dependencyPaths | ForEach-Object { Quote-PSString $_ }) -join ", ") + ")"
+    }
 
     $scriptText = @"
 `$ErrorActionPreference = 'Stop'
-Add-AppxPackage -Path $(Quote-PSString $bundlePath)
+`$dependencyPaths = $dependencyPathsLiteral
+if (`$dependencyPaths.Count -gt 0) {
+    Add-AppxPackage -Path $(Quote-PSString $bundlePath) -DependencyPath `$dependencyPaths
+} else {
+    Add-AppxPackage -Path $(Quote-PSString $bundlePath)
+}
 "@
 
     try {
+        Assert-AuthenticodeSignature -Path $bundlePath -ExpectedSubjectPattern "Microsoft Corporation"
         Invoke-WindowsPowerShell -ScriptText $scriptText -AllowedExitCodes @(0) | Out-Null
     } catch {
         Write-WarnLine "Direct App Installer msixbundle install failed: $($_.Exception.Message)"

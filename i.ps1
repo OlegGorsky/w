@@ -20,7 +20,7 @@ try {
 }
 
 $powershell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-& $powershell -NoProfile -ExecutionPolicy Bypass -File $setup
+& $powershell -NoProfile -ExecutionPolicy Bypass -File $setup -RepairStorePolicies
 
 $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
 

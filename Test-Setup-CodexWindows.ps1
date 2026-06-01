@@ -102,6 +102,10 @@ foreach ($requiredFunction in @(
     "Invoke-CodexDesktopWingetInstall",
     "Invoke-CodexDesktopStoreInstaller",
     "Invoke-WithRetry",
+    "Get-WingetReleaseAsset",
+    "Get-AppInstallerDependencyArchitecture",
+    "Assert-AppInstallerDependencyPackage",
+    "Get-AppInstallerDependencyPathsFromRelease",
     "Install-CodexDesktopDirectMsix",
     "Resolve-CodexDesktopMicrosoftStoreMsix",
     "Enable-AppxTrustedPackageInstall",
@@ -164,6 +168,14 @@ Assert-Contains -Haystack $content -Needle 'if (-not [string]::IsNullOrWhiteSpac
 Assert-Contains -Haystack $content -Needle 'Invoke-WithRetry -Description "Download $Uri"' -Message "Downloads must retry transient network/CDN failures."
 Assert-Contains -Haystack $content -Needle 'Invoke-WithRetry -Description "$Method $Uri"' -Message "HTTP text requests must retry transient network/CDN failures."
 Assert-Contains -Haystack $content -Needle 'Invoke-WithRetry -Description "GET $Uri"' -Message "REST JSON requests must retry transient network/CDN failures."
+Assert-Contains -Haystack $content -Needle 'DesktopAppInstaller_Dependencies.zip' -Message "winget repair must download official Desktop App Installer dependency packages."
+Assert-Contains -Haystack $content -Needle 'DesktopAppInstaller_Dependencies.txt' -Message "winget repair must verify the dependency zip hash from the official release asset."
+Assert-Contains -Haystack $content -Needle 'Microsoft.VCLibs.140.00_*.appx' -Message "winget repair must provide Microsoft.VCLibs.140.00 to Add-AppxPackage."
+Assert-Contains -Haystack $content -Needle 'Microsoft.VCLibs.140.00.UWPDesktop_*.appx' -Message "winget repair must provide Microsoft.VCLibs UWPDesktop to Add-AppxPackage."
+Assert-Contains -Haystack $content -Needle 'Microsoft.WindowsAppRuntime.*.appx' -Message "winget repair must provide Windows App Runtime to Add-AppxPackage."
+Assert-Contains -Haystack $content -Needle 'Add-AppxPackage -Path $(Quote-PSString $bundlePath) -DependencyPath `$dependencyPaths' -Message "App Installer repair must pass dependency packages to Add-AppxPackage."
+Assert-Contains -Haystack $content -Needle 'Assert-AuthenticodeSignature -Path $bundlePath -ExpectedSubjectPattern "Microsoft Corporation"' -Message "App Installer msixbundle must be Authenticode verified before install."
+Assert-Contains -Haystack $content -Needle 'Store/App Installer repair left packages missing' -Message "Store repair must warn when register-by-family did not actually restore packages."
 Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
 Assert-Contains -Haystack $content -Needle 'wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -Message "WSL setup must fall back to the official WSL2 kernel update MSI."
@@ -218,6 +230,7 @@ Assert-Contains -Haystack $bootstrapContent -Needle 'Get-Content -LiteralPath $l
 Assert-Contains -Haystack $bootstrapContent -Needle '$cacheBust = [Guid]::NewGuid().ToString("N")' -Message "Bootstrap cache-busting must work on old Windows PowerShell/.NET builds."
 Assert-Contains -Haystack $bootstrapContent -Needle '$setupVersion = "' -Message "Bootstrap must pin the setup download to a tested immutable commit."
 Assert-Contains -Haystack $bootstrapContent -Needle 'raw.githubusercontent.com/OlegGorsky/w/$setupVersion/Setup-CodexWindows.ps1' -Message "Bootstrap must download setup from an immutable raw commit URL."
+Assert-Contains -Haystack $bootstrapContent -Needle '-RepairStorePolicies' -Message "Short web bootstrap must repair Store policies by default for stripped Windows images."
 Assert-Contains -Haystack $bootstrapContent -Needle '$setupRequestUrl = "{0}?cb={1}" -f $setupUrl, $cacheBust' -Message "Bootstrap cache-bust URL must avoid PowerShell variable-name ambiguity before ?."
 Assert-Contains -Haystack $bootstrapContent -Needle 'Invoke-WebRequest -Uri $setupRequestUrl' -Message "Bootstrap must download using the safely formatted cache-bust URL."
 Assert-NotContains -Haystack $bootstrapContent -Needle '"$setupUrl?cb=$cacheBust"' -Message "Bootstrap must not interpolate a variable directly before ? in an expandable string."
