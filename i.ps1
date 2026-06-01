@@ -6,12 +6,13 @@ try {
 } catch {
 }
 
-$base = "https://oleggorsky.github.io/w"
+$setupVersion = "ec9f556e4a6244632ac005dc3c0c5bc6d336fb6e"
+$setupUrl = "https://raw.githubusercontent.com/OlegGorsky/w/$setupVersion/Setup-CodexWindows.ps1"
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [IO.Path]::GetTempPath() }
 $setup = Join-Path $tempRoot "Setup-CodexWindows.ps1"
 
 $cacheBust = [Guid]::NewGuid().ToString("N")
-Invoke-WebRequest -Uri "$base/Setup-CodexWindows.ps1?cb=$cacheBust" -UseBasicParsing -OutFile $setup
+Invoke-WebRequest -Uri "$setupUrl?cb=$cacheBust" -UseBasicParsing -OutFile $setup
 try {
     Unblock-File -Path $setup -ErrorAction SilentlyContinue
 } catch {
