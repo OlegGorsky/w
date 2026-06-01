@@ -2434,13 +2434,33 @@ function Test-Wsl2VirtualizationAvailable {
             return $true
         }
 
+        $hasSlat = $false
+        $hasFirmwareVirtualizationProperty = $false
+        $hasFirmwareVirtualization = $false
+
         foreach ($processor in $processors) {
             if ($processor.SecondLevelAddressTranslationExtensions) {
-                return $true
+                $hasSlat = $true
+            }
+
+            $firmwareVirtualizationProperty = $processor.PSObject.Properties["VirtualizationFirmwareEnabled"]
+            if ($null -ne $firmwareVirtualizationProperty) {
+                $hasFirmwareVirtualizationProperty = $true
+                if ($firmwareVirtualizationProperty.Value) {
+                    $hasFirmwareVirtualization = $true
+                }
             }
         }
 
-        return $false
+        if (-not $hasSlat) {
+            return $false
+        }
+
+        if ($hasFirmwareVirtualizationProperty -and -not $hasFirmwareVirtualization) {
+            return $false
+        }
+
+        return $true
     } catch {
         Write-WarnLine "Could not inspect CPU virtualization flags for WSL2: $($_.Exception.Message)"
         return $true
@@ -2618,7 +2638,7 @@ function Invoke-WslImportAttempt {
         [Parameter(Mandatory = $true)][string]$InstallDirectory,
         [Parameter(Mandatory = $true)][string]$RootfsPath,
         [Parameter(Mandatory = $true)][string]$Label,
-        [switch]$UseVersion2
+        [ValidateSet(0, 1, 2)][int]$WslVersion = 0
     )
 
     if ((Get-WslDistroNames -WslPath $WslPath) -contains $DistroName) {
@@ -2629,8 +2649,8 @@ function Invoke-WslImportAttempt {
     $attemptInstallDirectory = Reset-WslImportInstallDirectory -InstallDirectory $InstallDirectory
 
     $arguments = @("--import", $DistroName, $attemptInstallDirectory, $RootfsPath)
-    if ($UseVersion2) {
-        $arguments += @("--version", "2")
+    if ($WslVersion -ne 0) {
+        $arguments += @("--version", [string]$WslVersion)
     }
 
     Write-Info "Trying wsl --import with $Label."
@@ -2680,13 +2700,14 @@ function Import-UbuntuWslRootfs {
     $imported = $false
     $compressedAttempts = @()
     if (-not $SkipWsl2) {
-        $compressedAttempts += @{ Label = "compressed rootfs and WSL 2"; Path = $rootfsGzipPath; UseVersion2 = $true }
+        $compressedAttempts += @{ Label = "compressed rootfs and WSL 2"; Path = $rootfsGzipPath; WslVersion = 2 }
+        $compressedAttempts += @{ Label = "compressed rootfs and default WSL version"; Path = $rootfsGzipPath; WslVersion = 0 }
     }
-    $compressedAttempts += @{ Label = "compressed rootfs and default WSL version"; Path = $rootfsGzipPath; UseVersion2 = $false }
+    $compressedAttempts += @{ Label = "compressed rootfs and WSL 1"; Path = $rootfsGzipPath; WslVersion = 1 }
 
     foreach ($attempt in $compressedAttempts) {
         try {
-            Invoke-WslImportAttempt -WslPath $WslPath -DistroName $DistroName -InstallDirectory $installDirectory -RootfsPath $attempt.Path -Label $attempt.Label -UseVersion2:([bool]$attempt.UseVersion2)
+            Invoke-WslImportAttempt -WslPath $WslPath -DistroName $DistroName -InstallDirectory $installDirectory -RootfsPath $attempt.Path -Label $attempt.Label -WslVersion ([int]$attempt.WslVersion)
             $imported = $true
             break
         } catch {
@@ -2702,13 +2723,14 @@ function Import-UbuntuWslRootfs {
 
         $plainTarAttempts = @()
         if (-not $SkipWsl2) {
-            $plainTarAttempts += @{ Label = "decompressed tar rootfs and WSL 2"; Path = $rootfsTarPath; UseVersion2 = $true }
+            $plainTarAttempts += @{ Label = "decompressed tar rootfs and WSL 2"; Path = $rootfsTarPath; WslVersion = 2 }
+            $plainTarAttempts += @{ Label = "decompressed tar rootfs and default WSL version"; Path = $rootfsTarPath; WslVersion = 0 }
         }
-        $plainTarAttempts += @{ Label = "decompressed tar rootfs and default WSL version"; Path = $rootfsTarPath; UseVersion2 = $false }
+        $plainTarAttempts += @{ Label = "decompressed tar rootfs and WSL 1"; Path = $rootfsTarPath; WslVersion = 1 }
 
         foreach ($attempt in $plainTarAttempts) {
             try {
-                Invoke-WslImportAttempt -WslPath $WslPath -DistroName $DistroName -InstallDirectory $installDirectory -RootfsPath $attempt.Path -Label $attempt.Label -UseVersion2:([bool]$attempt.UseVersion2)
+                Invoke-WslImportAttempt -WslPath $WslPath -DistroName $DistroName -InstallDirectory $installDirectory -RootfsPath $attempt.Path -Label $attempt.Label -WslVersion ([int]$attempt.WslVersion)
                 $imported = $true
                 break
             } catch {

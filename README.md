@@ -53,7 +53,10 @@ to Microsoft's official WSL2 Linux kernel update MSI and verifies its Microsoft
 signature before installation.
 On VPS hosts where nested virtualization/SLAT is not exposed to Windows, WSL2
 cannot run; the script detects that and uses WSL1 for the Ubuntu/Codex fallback
-instead of looping through doomed WSL2 update/import attempts.
+instead of looping through doomed WSL2 update/import attempts. If Windows
+appears WSL2-capable but `wsl --import` still fails, the script now also tries
+an explicit WSL1 rootfs import instead of relying on Windows' default WSL
+version.
 
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 

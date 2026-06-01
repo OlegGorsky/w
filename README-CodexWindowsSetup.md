@@ -86,6 +86,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
   with `wsl --import`, creates the default Linux user, and then continues with
   Codex CLI inside WSL. If the legacy inbox WSL import path rejects the
   compressed rootfs, the script decompresses it to a plain `.tar` and retries.
+  If Windows appears WSL2-capable but the VM/VPS cannot actually start WSL2, the
+  rootfs fallback also tries an explicit WSL1 import.
   If Windows reports a pending reboot after optional-feature changes and WSL is
   not responding yet, WSL setup is deferred until the next run so users do not
   land in a broken half-initialized flow. By default, the script registers a
