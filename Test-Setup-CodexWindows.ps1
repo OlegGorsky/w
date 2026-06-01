@@ -90,6 +90,9 @@ foreach ($requiredFunction in @(
     "Get-WindowsOptionalFeatureState",
     "Test-WindowsOptionalFeatureEnabled",
     "Test-WindowsRebootPending",
+    "Get-SetupAutoResumeScriptPath",
+    "Clear-SetupAutoResume",
+    "Enable-SetupAutoResume",
     "Get-WslDistroNames",
     "Test-WslEngineAvailable",
     "Test-WslDistroInitialized",
@@ -122,6 +125,12 @@ Assert-Contains -Haystack $content -Needle 'Decompressing Ubuntu rootfs for lega
 Assert-Contains -Haystack $content -Needle 'ubuntu-wsl.rootfs.tar' -Message "WSL fallback must retry import with a plain tar rootfs."
 Assert-Contains -Haystack $content -Needle 'Windows has a pending reboot; WSL setup will continue after reboot.' -Message "WSL flow must detect pending reboots before import attempts."
 Assert-Contains -Haystack $content -Needle 'Test-WslEngineAvailable' -Message "Pending reboot handling must not block WSL if the engine is already responding."
+Assert-Contains -Haystack $content -Needle '$script:AutoResumeTaskName = "Codex Windows Setup Resume"' -Message "Setup must define a stable auto-resume task name."
+Assert-Contains -Haystack $content -Needle 'Register-ScheduledTask' -Message "Setup must register an elevated logon task for automatic post-reboot continuation."
+Assert-Contains -Haystack $content -Needle 'New-ScheduledTaskPrincipal' -Message "Auto-resume task must be registered with an explicit principal."
+Assert-Contains -Haystack $content -Needle 'RunLevel Highest' -Message "Auto-resume task must run elevated."
+Assert-Contains -Haystack $content -Needle 'Setup auto-resume' -Message "Final flow must include setup auto-resume as a component."
+Assert-Contains -Haystack $content -Needle '$SkipAutoResume' -Message "Auto-resume must be disableable."
 Assert-Contains -Haystack $content -Needle 'WSL diagnostics:' -Message "WSL failures must log diagnostic context."
 Assert-Contains -Haystack $content -Needle '$script:WslDistroImportedThisRun' -Message "WSL flow must track imported distro setup."
 Assert-Contains -Haystack $content -Needle 'default=%s' -Message "Imported WSL distro must set a default Linux user."

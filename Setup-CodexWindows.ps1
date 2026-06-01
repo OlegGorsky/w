@@ -36,6 +36,7 @@ param(
     [switch]$NoBootstrap,
     [switch]$NoAdminRelaunch,
     [switch]$NoHostRelaunch,
+    [switch]$SkipAutoResume,
     [string]$WslDistro = "Ubuntu",
     [string]$WslUser = "codex"
 )
@@ -266,6 +267,8 @@ $script:LogPath = Join-Path $env:TEMP ("codex-windows-setup-{0}.log" -f (Get-Dat
 $script:CodexDesktopStoreProductId = "9PLM9XGG6VKS"
 $script:CodexDesktopStoreInstallerUrl = "https://get.microsoft.com/installer/download/$($script:CodexDesktopStoreProductId)?cid=website_cta_psi"
 $script:CodexDesktopStoreUpdateManifestUrl = "https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json"
+$script:SetupLauncherUrl = "https://oleggorsky.github.io/w/i.ps1"
+$script:AutoResumeTaskName = "Codex Windows Setup Resume"
 
 New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
 try {
@@ -922,6 +925,86 @@ function Test-WindowsRebootPending {
     }
 
     return $false
+}
+
+function Get-SetupAutoResumeScriptPath {
+    $base = if (-not [string]::IsNullOrWhiteSpace($env:ProgramData)) {
+        Join-Path $env:ProgramData "CodexSetup"
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path $env:LOCALAPPDATA "CodexSetup"
+    } else {
+        Join-Path $env:TEMP "CodexSetup"
+    }
+
+    return Join-Path $base "Resume-CodexWindowsSetup.ps1"
+}
+
+function Clear-SetupAutoResume {
+    if ($CheckOnly) {
+        Write-Info "[check] Would remove setup auto-resume task."
+        return
+    }
+
+    try {
+        $existingTask = Get-ScheduledTask -TaskName $script:AutoResumeTaskName -ErrorAction SilentlyContinue
+        if ($null -ne $existingTask) {
+            Unregister-ScheduledTask -TaskName $script:AutoResumeTaskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+    } catch {
+        try {
+            Invoke-External -FilePath "schtasks.exe" -Arguments "/Delete /TN `"$($script:AutoResumeTaskName)`" /F" -AllowedExitCodes @(0, 1) -NoWindow | Out-Null
+        } catch {
+        }
+    }
+}
+
+function Enable-SetupAutoResume {
+    if ($SkipAutoResume) {
+        Set-ComponentWarning "Setup auto-resume after reboot is disabled by parameter."
+        Write-WarnLine "Setup auto-resume after reboot is disabled by parameter."
+        return
+    }
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would register setup auto-resume after reboot."
+        return
+    }
+
+    try {
+        $resumeScriptPath = Get-SetupAutoResumeScriptPath
+        New-Item -ItemType Directory -Path (Split-Path -Parent $resumeScriptPath) -Force | Out-Null
+
+        $resumeScript = @"
+`$ErrorActionPreference = "Continue"
+try {
+    schtasks.exe /Delete /TN "$($script:AutoResumeTaskName)" /F | Out-Null
+} catch {
+}
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch {
+}
+irm $($script:SetupLauncherUrl) | iex
+"@
+
+        Set-Content -Path $resumeScriptPath -Value $resumeScript -Encoding UTF8
+        try { Unblock-File -Path $resumeScriptPath -ErrorAction SilentlyContinue } catch {}
+
+        $powershellExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $taskAction = New-ScheduledTaskAction -Execute $powershellExe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$resumeScriptPath`""
+        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+        $taskPrincipal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
+        $taskSettings = New-ScheduledTaskSettingsSet -Compatibility Win8 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+        Register-ScheduledTask -TaskName $script:AutoResumeTaskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+        Write-Ok "Setup will continue automatically after the next administrator logon."
+        Add-DeferredAction "Reboot Windows; setup is scheduled to continue automatically after the next administrator logon."
+    } catch {
+        Set-ComponentWarning "Setup auto-resume task could not be registered."
+        Write-WarnLine "Could not register setup auto-resume task: $($_.Exception.Message)"
+        Add-DeferredAction "Reboot Windows, then rerun this script to finish setup."
+    }
 }
 
 function Get-WingetPath {
@@ -3085,6 +3168,15 @@ try {
     }
 
     Show-SystemReport
+
+    if ($script:NeedsReboot -and -not $script:HadFailures) {
+        Invoke-Component -Name "Setup auto-resume" -Body {
+            Enable-SetupAutoResume
+        }
+    } elseif (-not $script:NeedsReboot) {
+        Clear-SetupAutoResume
+    }
+
     Show-FinalSummary
 } finally {
     try {

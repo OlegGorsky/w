@@ -46,7 +46,8 @@ inside WSL. On older inbox WSL builds it also retries the import with a
 decompressed `.tar` rootfs and logs WSL diagnostics if the import still fails.
 If Windows has a pending reboot after optional-feature changes and WSL is not
 responding yet, WSL setup is deferred until the next run instead of sending
-users through broken import attempts.
+users through broken import attempts. By default, the script also registers a
+one-time elevated logon task so setup can continue automatically after reboot.
 
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 

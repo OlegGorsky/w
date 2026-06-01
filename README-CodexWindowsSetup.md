@@ -47,6 +47,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
 # Skip desktop app installation
 .\Setup-CodexWindows.ps1 -SkipCodexDesktop
 
+# Do not register automatic continuation after a required reboot
+.\Setup-CodexWindows.ps1 -SkipAutoResume
+
 # Diagnose Store policies only by default; explicitly repair them
 .\Setup-CodexWindows.ps1 -RepairStorePolicies
 
@@ -85,7 +88,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
   compressed rootfs, the script decompresses it to a plain `.tar` and retries.
   If Windows reports a pending reboot after optional-feature changes and WSL is
   not responding yet, WSL setup is deferred until the next run so users do not
-  land in a broken half-initialized flow.
+  land in a broken half-initialized flow. By default, the script registers a
+  one-time elevated logon task so setup can continue automatically after reboot;
+  use `-SkipAutoResume` to disable that behavior.
 - Logs are written to `%TEMP%\codex-windows-setup-*.log`.
 
 ## Local Static Check
