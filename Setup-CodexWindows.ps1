@@ -2607,11 +2607,17 @@ function Import-UbuntuWslRootfs {
     $attemptErrors = New-Object System.Collections.Generic.List[string]
 
     Write-Info "Downloading official Ubuntu WSL rootfs without Microsoft Store."
+    Write-Info "This is a large download and may take several minutes on slow connections."
     Invoke-WebDownload -Uri $rootfsUrl -OutFile $rootfsGzipPath
 
     if ($CheckOnly) {
         Write-Info "[check] Would import $DistroName into WSL from Ubuntu rootfs."
         return
+    }
+
+    $rootfsFile = Get-Item -LiteralPath $rootfsGzipPath -ErrorAction Stop
+    if ($rootfsFile.Length -lt [int64](50MB)) {
+        throw "Downloaded Ubuntu WSL rootfs is unexpectedly small ($($rootfsFile.Length) bytes). Check network, proxy, or firewall settings and rerun setup."
     }
 
     $imported = $false

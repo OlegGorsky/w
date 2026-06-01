@@ -124,6 +124,8 @@ Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
 Assert-Contains -Haystack $content -Needle 'Decompressing Ubuntu rootfs for legacy WSL import.' -Message "WSL fallback must decompress gzip rootfs for legacy import support."
 Assert-Contains -Haystack $content -Needle 'ubuntu-wsl.rootfs.tar' -Message "WSL fallback must retry import with a plain tar rootfs."
+Assert-Contains -Haystack $content -Needle 'This is a large download and may take several minutes on slow connections.' -Message "WSL rootfs download must explain long silent waits."
+Assert-Contains -Haystack $content -Needle 'Downloaded Ubuntu WSL rootfs is unexpectedly small' -Message "WSL rootfs download must reject proxy/firewall error pages."
 Assert-Contains -Haystack $content -Needle 'Windows has a pending reboot; WSL setup will continue after reboot.' -Message "WSL flow must detect pending reboots before import attempts."
 Assert-Contains -Haystack $content -Needle 'Test-WslEngineAvailable' -Message "Pending reboot handling must not block WSL if the engine is already responding."
 Assert-Contains -Haystack $content -Needle '$script:AutoResumeTaskName = "Codex Windows Setup Resume"' -Message "Setup must define a stable auto-resume task name."
