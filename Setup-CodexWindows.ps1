@@ -657,6 +657,48 @@ function Get-CommandVersion {
     }
 }
 
+function Get-PwshCommand {
+    $candidates = @()
+
+    $cmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if ($null -ne $cmd -and (Test-Path -LiteralPath $cmd.Source)) {
+        $candidates += $cmd.Source
+    }
+
+    $psRoot = Join-Path $env:ProgramFiles "PowerShell"
+    if (Test-Path -LiteralPath $psRoot) {
+        $candidates += @(Get-ChildItem -Path $psRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "pwsh.exe" } |
+            Where-Object { Test-Path -LiteralPath $_ })
+    }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Get-WindowsOptionalFeatureState {
+    param([Parameter(Mandatory = $true)][string]$FeatureName)
+
+    try {
+        $feature = Get-WindowsOptionalFeature -Online -FeatureName $FeatureName -ErrorAction Stop
+        return [string]$feature.State
+    } catch {
+        return "Unknown"
+    }
+}
+
+function Test-WindowsOptionalFeatureEnabled {
+    param([Parameter(Mandatory = $true)][string]$FeatureName)
+
+    return (Get-WindowsOptionalFeatureState -FeatureName $FeatureName) -eq "Enabled"
+}
+
 function Get-WingetPath {
     $candidates = @()
 
@@ -991,6 +1033,10 @@ function Install-PowerShell7 {
 
     if ($null -ne $bestInstalledVersion -and $bestInstalledVersion -ge $latestVersion) {
         Write-Ok "PowerShell 7 is current enough: $bestInstalledVersion"
+        $pwshPath = Get-PwshCommand
+        if (-not [string]::IsNullOrWhiteSpace($pwshPath)) {
+            Add-CurrentProcessPath -Entry (Split-Path -Parent $pwshPath)
+        }
         return
     }
 
@@ -1016,6 +1062,11 @@ function Install-PowerShell7 {
     $exitCode = Invoke-External -FilePath "msiexec.exe" -Arguments "/i `"$msiPath`" /qn /norestart" -AllowedExitCodes @(0, 3010)
     if ($exitCode -eq 3010) {
         $script:NeedsReboot = $true
+    }
+
+    $pwshPath = Get-PwshCommand
+    if (-not [string]::IsNullOrWhiteSpace($pwshPath)) {
+        Add-CurrentProcessPath -Entry (Split-Path -Parent $pwshPath)
     }
 
     Write-Ok "PowerShell 7 installer completed."
@@ -1369,14 +1420,37 @@ function Ensure-Wsl {
         $wslExe = "wsl.exe"
     }
 
-    $exitCode = Invoke-External -FilePath "dism.exe" -Arguments "/online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart" -AllowedExitCodes @(0, 3010)
-    if ($exitCode -eq 3010) {
-        $script:NeedsReboot = $true
+    $wslFeatureEnabledBefore = Test-WindowsOptionalFeatureEnabled -FeatureName "Microsoft-Windows-Subsystem-Linux"
+    $vmFeatureEnabledBefore = Test-WindowsOptionalFeatureEnabled -FeatureName "VirtualMachinePlatform"
+
+    if (-not $wslFeatureEnabledBefore) {
+        $exitCode = Invoke-External -FilePath "dism.exe" -Arguments "/online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart" -AllowedExitCodes @(0, 3010)
+        if ($exitCode -eq 3010) {
+            $script:NeedsReboot = $true
+        }
+    } else {
+        Write-Ok "WSL optional feature is already enabled."
     }
 
-    $exitCode = Invoke-External -FilePath "dism.exe" -Arguments "/online /enable-feature /featurename:VirtualMachinePlatform /all /norestart" -AllowedExitCodes @(0, 3010)
-    if ($exitCode -eq 3010) {
+    if (-not $vmFeatureEnabledBefore) {
+        $exitCode = Invoke-External -FilePath "dism.exe" -Arguments "/online /enable-feature /featurename:VirtualMachinePlatform /all /norestart" -AllowedExitCodes @(0, 3010)
+        if ($exitCode -eq 3010) {
+            $script:NeedsReboot = $true
+        }
+    } else {
+        Write-Ok "Virtual Machine Platform optional feature is already enabled."
+    }
+
+    $wslFeatureEnabledAfter = Test-WindowsOptionalFeatureEnabled -FeatureName "Microsoft-Windows-Subsystem-Linux"
+    $vmFeatureEnabledAfter = Test-WindowsOptionalFeatureEnabled -FeatureName "VirtualMachinePlatform"
+    if ((-not $wslFeatureEnabledBefore -or -not $vmFeatureEnabledBefore) -and ($wslFeatureEnabledAfter -or $vmFeatureEnabledAfter)) {
         $script:NeedsReboot = $true
+        Add-DeferredAction "Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL."
+    }
+
+    if ($script:NeedsReboot) {
+        Write-WarnLine "WSL features were enabled and a reboot is required before WSL update/default-version/distro setup."
+        return
     }
 
     try {
@@ -1394,11 +1468,6 @@ function Ensure-Wsl {
         Invoke-NativeCommand -FilePath $wslExe -Arguments @("--set-default-version", "2") -AllowedExitCodes @(0) | Out-Null
     } catch {
         Write-WarnLine "Could not set WSL default version to 2 yet: $($_.Exception.Message)"
-    }
-
-    if ($script:NeedsReboot) {
-        Write-WarnLine "WSL features were enabled and a reboot may be required before distro installation."
-        return
     }
 
     $distros = Get-WslDistroNames -WslPath $wslExe
@@ -1592,12 +1661,16 @@ function Show-SystemReport {
         Write-WarnLine "Launch environment report failed: $($_.Exception.Message)"
     }
 
-    $pwshCmd = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    if ($null -ne $pwshCmd) {
-        $pwshVersion = Get-CommandVersion -CommandName "pwsh.exe" -Arguments @("-NoLogo", "-NoProfile", "-Command", '$PSVersionTable.PSVersion.ToString()')
-        Write-Info "pwsh on PATH: $($pwshCmd.Source) $pwshVersion"
+    $pwshPath = Get-PwshCommand
+    if (-not [string]::IsNullOrWhiteSpace($pwshPath)) {
+        try {
+            $pwshVersion = & $pwshPath -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>$null
+            Write-Info "pwsh: $pwshPath $pwshVersion"
+        } catch {
+            Write-Info "pwsh: $pwshPath"
+        }
     } else {
-        Write-Info "pwsh on PATH: not found"
+        Write-Info "pwsh: not found"
     }
 
     $winget = Get-WingetPath
@@ -1644,7 +1717,7 @@ function Show-SystemReport {
 function Show-FinalSummary {
     Write-Step "Final summary"
     foreach ($result in $script:Results) {
-        $line = "{0}: {1}" -f $result.Status, $result.Name
+        $line = $result.Name
         if (-not [string]::IsNullOrWhiteSpace($result.Detail)) {
             $line = "$line - $($result.Detail)"
         }

@@ -65,6 +65,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
 - Windows support is checked up front. Current scripted setup expects Windows 10
   1809/build 17763 or newer; WSL distro setup expects Windows 10 2004/build
   19041 or newer.
+- Windows Server is supported for CLI-oriented setup, but Microsoft Store apps
+  are not installed by this script on Server editions. Codex Desktop will not
+  appear in Start on Windows Server unless it is installed through a supported
+  desktop-client Store/AppX path outside this script.
 - Store policy registry values are reported by default. They are changed only
   when `-RepairStorePolicies` is passed.
 - WSL distro initialization can still require one interactive first launch to

@@ -64,10 +64,13 @@ foreach ($requiredParam in @(
 foreach ($requiredFunction in @(
     "Get-WindowsSupportInfo",
     "Assert-WindowsSupport",
+    "Get-PwshCommand",
     "Install-VcRedist",
     "Get-CodexCommand",
     "Get-CodexCommandVersion",
     "Repair-WingetSources",
+    "Get-WindowsOptionalFeatureState",
+    "Test-WindowsOptionalFeatureEnabled",
     "Get-WslDistroNames",
     "Test-WslDistroInitialized",
     "Add-DeferredAction"
@@ -81,6 +84,10 @@ Assert-Contains -Haystack $content -Needle '$script:WslDistroInstalledThisRun' -
 Assert-Contains -Haystack $content -Needle 'winget source reset --force' -Message "winget source repair must reset sources."
 Assert-Contains -Haystack $content -Needle 'Windows 10 2004' -Message "WSL support check must explain Windows 10 2004/build 19041 requirement."
 Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Store policy writes must be gated by RepairStorePolicies."
+Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
+Assert-Contains -Haystack $content -Needle 'ProgramFiles "PowerShell"' -Message "pwsh detection must search Program Files, not only PATH."
+Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
+Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."
 Assert-NotContains -Haystack $content -Needle '-Type DWord' -Message "Set-ItemProperty must not use unsupported -Type DWord."
 

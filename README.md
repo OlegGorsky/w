@@ -25,6 +25,10 @@ It installs or repairs:
 - WSL/Ubuntu
 - Codex CLI inside WSL after the distro is initialized
 
+On Windows Server, the script performs the CLI-oriented setup. Microsoft Store
+apps are not installed by this script on Server editions, so Codex Desktop will
+not appear in Start there.
+
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 
 Dry run after cloning:
