@@ -36,7 +36,8 @@ param(
     [switch]$NoBootstrap,
     [switch]$NoAdminRelaunch,
     [switch]$NoHostRelaunch,
-    [string]$WslDistro = "Ubuntu"
+    [string]$WslDistro = "Ubuntu",
+    [string]$WslUser = "codex"
 )
 
 Set-StrictMode -Version 2.0
@@ -256,6 +257,7 @@ $script:StartedAt = Get-Date
 $script:NeedsReboot = $false
 $script:HadFailures = $false
 $script:WslDistroInstalledThisRun = $false
+$script:WslDistroImportedThisRun = $false
 $script:Results = New-Object System.Collections.Generic.List[object]
 $script:DeferredActions = New-Object System.Collections.Generic.List[string]
 $script:TempRoot = Join-Path $env:TEMP ("codex-windows-setup-" + [Guid]::NewGuid().ToString("N"))
@@ -2215,6 +2217,109 @@ function Test-WslDistroInitialized {
     }
 }
 
+function Quote-BashString {
+    param([AllowNull()][string]$Value)
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+
+    return "'" + ($Value -replace "'", "'\''") + "'"
+}
+
+function Get-UbuntuWslRootfsUrl {
+    $arch = Get-ArchitectureInfo
+    if ($arch.CodexArchitecture -ieq "Arm64") {
+        return "https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-arm64-24.04lts.rootfs.tar.gz"
+    }
+
+    return "https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz"
+}
+
+function Get-WslImportInstallDirectory {
+    param([Parameter(Mandatory = $true)][string]$DistroName)
+
+    $base = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        Join-Path $env:LOCALAPPDATA "CodexSetup\WSL"
+    } else {
+        Join-Path $env:ProgramData "CodexSetup\WSL"
+    }
+
+    $safeName = ($DistroName -replace '[^A-Za-z0-9_.-]', '-')
+    return Join-Path $base $safeName
+}
+
+function Initialize-ImportedWslDistro {
+    param(
+        [Parameter(Mandatory = $true)][string]$WslPath,
+        [Parameter(Mandatory = $true)][string]$DistroName,
+        [Parameter(Mandatory = $true)][string]$UserName
+    )
+
+    $quotedUser = Quote-BashString $UserName
+    $initScript = @"
+set -e
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y sudo curl ca-certificates
+fi
+groupadd -f sudo || true
+if ! id -u $quotedUser >/dev/null 2>&1; then
+  useradd -m -s /bin/bash $quotedUser
+fi
+usermod -aG sudo $quotedUser || true
+mkdir -p /etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' $quotedUser > /etc/sudoers.d/99-codex
+chmod 0440 /etc/sudoers.d/99-codex
+printf '[user]\ndefault=%s\n' $quotedUser > /etc/wsl.conf
+"@
+
+    Invoke-NativeCommand -FilePath $WslPath -Arguments @("-d", $DistroName, "-u", "root", "--", "bash", "-lc", $initScript) -AllowedExitCodes @(0) | Out-Null
+
+    try {
+        Invoke-NativeCommand -FilePath $WslPath -Arguments @("--terminate", $DistroName) -AllowedExitCodes @(0) | Out-Null
+    } catch {
+        Write-WarnLine "Could not terminate $DistroName after non-interactive initialization: $($_.Exception.Message)"
+    }
+}
+
+function Import-UbuntuWslRootfs {
+    param(
+        [Parameter(Mandatory = $true)][string]$WslPath,
+        [Parameter(Mandatory = $true)][string]$DistroName
+    )
+
+    if ($DistroName -notmatch "^Ubuntu") {
+        throw "Store-free WSL import fallback currently supports Ubuntu distro names only. Requested: $DistroName"
+    }
+
+    $rootfsUrl = Get-UbuntuWslRootfsUrl
+    $rootfsPath = Join-Path $script:TempRoot "ubuntu-wsl.rootfs.tar.gz"
+    $installDirectory = Get-WslImportInstallDirectory -DistroName $DistroName
+
+    Write-Info "Downloading official Ubuntu WSL rootfs without Microsoft Store."
+    Invoke-WebDownload -Uri $rootfsUrl -OutFile $rootfsPath
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would import $DistroName into WSL from Ubuntu rootfs."
+        return
+    }
+
+    New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
+
+    try {
+        Invoke-NativeCommand -FilePath $WslPath -Arguments @("--import", $DistroName, $installDirectory, $rootfsPath, "--version", "2") -AllowedExitCodes @(0) | Out-Null
+    } catch {
+        Write-WarnLine "wsl --import --version 2 failed, retrying import without explicit version: $($_.Exception.Message)"
+        Invoke-NativeCommand -FilePath $WslPath -Arguments @("--import", $DistroName, $installDirectory, $rootfsPath) -AllowedExitCodes @(0) | Out-Null
+    }
+
+    Initialize-ImportedWslDistro -WslPath $WslPath -DistroName $DistroName -UserName $WslUser
+    $script:WslDistroImportedThisRun = $true
+    Write-Ok "Imported and initialized $DistroName from official Ubuntu WSL rootfs."
+}
+
 function Ensure-Wsl {
     if (-not (Test-IsAdmin)) {
         throw "WSL feature installation needs an elevated prompt."
@@ -2287,6 +2392,18 @@ function Ensure-Wsl {
     if ($distros -contains $WslDistro) {
         Write-Ok "WSL distro is installed: $WslDistro"
     } else {
+        if ($support.IsServer) {
+            Write-WarnLine "Windows Server detected. Using Store-free Ubuntu rootfs import instead of interactive wsl --install distro flow."
+            try {
+                Import-UbuntuWslRootfs -WslPath $wslExe -DistroName $WslDistro
+                return
+            } catch {
+                Write-WarnLine "Store-free Ubuntu WSL import failed: $($_.Exception.Message)"
+                Add-DeferredAction "WSL distro import failed. Check the log, then rerun this script after reboot/network repair."
+                return
+            }
+        }
+
         Write-Info "Installing WSL distro: $WslDistro"
         $distroInstallError = $null
         try {
@@ -2304,8 +2421,15 @@ function Ensure-Wsl {
 
         if (-not [string]::IsNullOrWhiteSpace($distroInstallError)) {
             Write-WarnLine "WSL distro install did not complete automatically: $distroInstallError"
-            Add-DeferredAction "Install $WslDistro manually from an elevated PowerShell with: wsl --install -d $WslDistro"
-            return
+            Write-WarnLine "Trying Store-free Ubuntu rootfs import fallback."
+            try {
+                Import-UbuntuWslRootfs -WslPath $wslExe -DistroName $WslDistro
+                return
+            } catch {
+                Write-WarnLine "Store-free Ubuntu WSL import failed: $($_.Exception.Message)"
+                Add-DeferredAction "Install $WslDistro manually from an elevated PowerShell with: wsl --install -d $WslDistro"
+                return
+            }
         }
 
         $script:WslDistroInstalledThisRun = $true

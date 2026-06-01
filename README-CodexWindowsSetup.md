@@ -77,8 +77,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
 - Store policy registry values are reported by default. They are changed only
   when `-RepairStorePolicies` is passed.
 - WSL distro initialization can still require one interactive first launch to
-  create the Linux user. After that, rerun the script and it will install Codex
-  CLI inside WSL.
+  create the Linux user when the normal `wsl --install` distro flow is used.
+  On Windows Server, the script avoids that path when possible: it downloads the
+  official Ubuntu 24.04 WSL rootfs from `cloud-images.ubuntu.com`, imports it
+  with `wsl --import`, creates the default Linux user, and then continues with
+  Codex CLI inside WSL.
 - Logs are written to `%TEMP%\codex-windows-setup-*.log`.
 
 ## Local Static Check

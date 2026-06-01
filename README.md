@@ -38,6 +38,12 @@ those builds and tries the direct signed MSIX fallback instead. For a fully
 supported Desktop setup, use Windows 10/11 client or another Windows build where
 Microsoft App Installer/Store installs are supported.
 
+For WSL on Windows Server, the script avoids sending users into Microsoft Store
+for Ubuntu. If `wsl --install -d Ubuntu` is not viable, it downloads the official
+Ubuntu 24.04 WSL rootfs from `cloud-images.ubuntu.com`, imports it with
+`wsl --import`, creates a default Linux user, and then continues with Codex CLI
+inside WSL.
+
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 
 Dry run after cloning:

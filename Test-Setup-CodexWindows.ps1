@@ -56,7 +56,8 @@ foreach ($requiredParam in @(
     "SkipWindowsSupportCheck",
     "UpdateAllWingetPackages",
     "RunWindowsUpdate",
-    "SkipCodexCliInWsl"
+    "SkipCodexCliInWsl",
+    "WslUser"
 )) {
     Assert-True -Condition ($paramNames -contains $requiredParam) -Message "Missing parameter: $requiredParam"
 }
@@ -90,6 +91,11 @@ foreach ($requiredFunction in @(
     "Test-WindowsOptionalFeatureEnabled",
     "Get-WslDistroNames",
     "Test-WslDistroInitialized",
+    "Import-UbuntuWslRootfs",
+    "Initialize-ImportedWslDistro",
+    "Get-UbuntuWslRootfsUrl",
+    "Get-WslImportInstallDirectory",
+    "Quote-BashString",
     "Add-DeferredAction"
 )) {
     Assert-True -Condition ($functionNames -contains $requiredFunction) -Message "Missing function: $requiredFunction"
@@ -102,6 +108,11 @@ Assert-Contains -Haystack $content -Needle 'winget source reset --force' -Messag
 Assert-Contains -Haystack $content -Needle 'Windows 10 2004' -Message "WSL support check must explain Windows 10 2004/build 19041 requirement."
 Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Store policy writes must be gated by RepairStorePolicies."
 Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
+Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
+Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
+Assert-Contains -Haystack $content -Needle '$script:WslDistroImportedThisRun' -Message "WSL flow must track imported distro setup."
+Assert-Contains -Haystack $content -Needle 'default=%s' -Message "Imported WSL distro must set a default Linux user."
+Assert-Contains -Haystack $content -Needle 'Windows Server detected. Using Store-free Ubuntu rootfs import' -Message "Windows Server must avoid interactive Store-backed WSL distro install."
 Assert-Contains -Haystack $content -Needle 'ProgramFiles "PowerShell"' -Message "pwsh detection must search Program Files, not only PATH."
 Assert-Contains -Haystack $content -Needle 'https://get.microsoft.com/installer/download' -Message "Codex Desktop fallback must use the official Microsoft Store web installer."
 Assert-Contains -Haystack $content -Needle '--silent' -Message "Official Store installer fallback must run in silent mode."
