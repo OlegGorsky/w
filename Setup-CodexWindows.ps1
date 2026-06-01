@@ -2357,7 +2357,7 @@ function Test-WslDistroInitialized {
 
     $stdoutPath = Join-Path $script:TempRoot ("wsl-init-check-" + [Guid]::NewGuid().ToString("N") + ".out")
     $stderrPath = Join-Path $script:TempRoot ("wsl-init-check-" + [Guid]::NewGuid().ToString("N") + ".err")
-    $arguments = "-d `"$DistroName`" -u root -- sh -lc `"exit 0`""
+    $arguments = Join-CommandArguments @("-d", $DistroName, "-u", "root", "--", "sh", "-lc", "exit 0")
 
     try {
         $process = Start-Process -FilePath $WslPath -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath

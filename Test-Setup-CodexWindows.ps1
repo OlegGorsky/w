@@ -123,6 +123,7 @@ Assert-Contains -Haystack $content -Needle 'winget source reset --force' -Messag
 Assert-Contains -Haystack $content -Needle 'Windows 10 2004' -Message "WSL support check must explain Windows 10 2004/build 19041 requirement."
 Assert-Contains -Haystack $content -Needle '$RepairStorePolicies' -Message "Store policy writes must be gated by RepairStorePolicies."
 Assert-Contains -Haystack $content -Needle 'Reboot Windows, then rerun this script to finish WSL distro setup and Codex CLI inside WSL.' -Message "WSL feature enable must add a clear reboot follow-up."
+Assert-Contains -Haystack $content -Needle 'Join-CommandArguments @("-d", $DistroName, "-u", "root", "--", "sh", "-lc", "exit 0")' -Message "WSL initialization probe must quote arguments reliably on Windows PowerShell 5.1."
 Assert-Contains -Haystack $content -Needle 'cloud-images.ubuntu.com/wsl/releases/noble/current' -Message "WSL fallback must use official Ubuntu WSL rootfs images."
 Assert-Contains -Haystack $content -Needle 'wsl --import' -Message "WSL fallback must import rootfs without Microsoft Store."
 Assert-Contains -Haystack $content -Needle 'wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -Message "WSL setup must fall back to the official WSL2 kernel update MSI."
