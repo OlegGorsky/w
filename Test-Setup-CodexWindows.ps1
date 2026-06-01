@@ -221,6 +221,7 @@ Assert-Contains -Haystack $content -Needle 'AllowAllTrustedApps' -Message "Direc
 Assert-Contains -Haystack $content -Needle 'MSIX publisher does not match signer' -Message "Direct MSIX fallback must validate manifest publisher against the signer certificate."
 Assert-Contains -Haystack $content -Needle 'Unexpected MSIX package identity' -Message "Direct MSIX fallback must validate OpenAI.Codex package identity."
 Assert-Contains -Haystack $content -Needle 'Skipping Microsoft Store web installer on this Server build' -Message "Server builds without winget must not open the Store web installer loop."
+Assert-Contains -Haystack $content -Needle 'Codex Desktop is installed; winget Store upgrade was not applied:' -Message "Installed Codex Desktop should treat winget Store upgrade misses as non-blocking diagnostics."
 Assert-Contains -Haystack $content -Needle 'WSL distro install did not complete automatically' -Message "WSL distro install failures should become follow-up actions instead of failing the whole component."
 Assert-Contains -Haystack $content -Needle 'Status "WARN"' -Message "Final summary must support warning component results."
 Assert-Contains -Haystack $content -Needle 'Write-WarnLine $line' -Message "Final summary must render warning component results as warnings."
@@ -240,6 +241,7 @@ Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summar
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."
 Assert-NotContains -Haystack $content -Needle '-Type DWord' -Message "Set-ItemProperty must not use unsupported -Type DWord."
 Assert-NotContains -Haystack $content -Needle 'Wangnov' -Message "Script must not use third-party Codex Desktop mirrors."
+Assert-NotContains -Haystack $content -Needle 'winget upgrade did not complete cleanly' -Message "Installed Codex Desktop should not show scary winget upgrade warnings when the package is already present."
 
 $bootstrapFunctionAsts = $ast.FindAll({
     param($node)

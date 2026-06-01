@@ -2306,7 +2306,7 @@ function Invoke-CodexDesktopWingetInstall {
         }
 
         if ($null -ne $lastWingetError) {
-            Write-WarnLine "winget upgrade did not complete cleanly. This often means no matching Store update was available: $lastWingetError"
+            Write-Info "Codex Desktop is installed; winget Store upgrade was not applied: $lastWingetError"
         }
     }
 }
