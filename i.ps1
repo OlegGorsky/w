@@ -6,10 +6,11 @@ try {
 } catch {
 }
 
-$base = "https://github.com/OlegGorsky/w/raw/main"
+$base = "https://oleggorsky.github.io/w"
 $setup = Join-Path $env:TEMP "Setup-CodexWindows.ps1"
 
-Invoke-WebRequest -Uri "$base/Setup-CodexWindows.ps1" -UseBasicParsing -OutFile $setup
+$cacheBust = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+Invoke-WebRequest -Uri "$base/Setup-CodexWindows.ps1?cb=$cacheBust" -UseBasicParsing -OutFile $setup
 try {
     Unblock-File -Path $setup -ErrorAction SilentlyContinue
 } catch {
