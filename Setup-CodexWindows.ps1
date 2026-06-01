@@ -262,6 +262,7 @@ $script:TempRoot = Join-Path $env:TEMP ("codex-windows-setup-" + [Guid]::NewGuid
 $script:LogPath = Join-Path $env:TEMP ("codex-windows-setup-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
 $script:CodexDesktopStoreProductId = "9PLM9XGG6VKS"
 $script:CodexDesktopStoreInstallerUrl = "https://get.microsoft.com/installer/download/$($script:CodexDesktopStoreProductId)?cid=website_cta_psi"
+$script:CodexDesktopStoreUpdateManifestUrl = "https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json"
 
 New-Item -ItemType Directory -Path $script:TempRoot -Force | Out-Null
 try {
@@ -633,6 +634,44 @@ function Invoke-WebDownload {
     try { Unblock-File -Path $OutFile -ErrorAction SilentlyContinue } catch {}
 }
 
+function Invoke-HttpText {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [string]$Method = "GET",
+        [string]$Body = "",
+        [string]$ContentType = "",
+        [hashtable]$Headers = @{}
+    )
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would request: $Method $Uri"
+        return ""
+    }
+
+    $requestHeaders = @{ "User-Agent" = "CodexWindowsSetup/1.0" }
+    foreach ($key in $Headers.Keys) {
+        $requestHeaders[$key] = $Headers[$key]
+    }
+
+    $parameters = @{
+        Uri             = $Uri
+        Method          = $Method
+        Headers         = $requestHeaders
+        UseBasicParsing = $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Body)) {
+        $parameters["Body"] = $Body
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ContentType)) {
+        $parameters["ContentType"] = $ContentType
+    }
+
+    $response = Invoke-WebRequest @parameters
+    return [string]$response.Content
+}
+
 function Assert-AuthenticodeSignature {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -842,6 +881,374 @@ function Get-CodexDesktopPackageText {
     return $desktopPackage
 }
 
+function Find-ObjectPropertyString {
+    param(
+        [AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string]) {
+        return $null
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            if ([string]$key -ieq $Name -and $Value[$key] -is [string]) {
+                return [string]$Value[$key]
+            }
+
+            $nested = Find-ObjectPropertyString -Value $Value[$key] -Name $Name
+            if (-not [string]::IsNullOrWhiteSpace($nested)) {
+                return $nested
+            }
+        }
+
+        return $null
+    }
+
+    if ($Value -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Value) {
+            $nested = Find-ObjectPropertyString -Value $item -Name $Name
+            if (-not [string]::IsNullOrWhiteSpace($nested)) {
+                return $nested
+            }
+        }
+
+        return $null
+    }
+
+    foreach ($property in $Value.PSObject.Properties) {
+        if ($property.Name -ieq $Name -and $property.Value -is [string]) {
+            return [string]$property.Value
+        }
+
+        $nested = Find-ObjectPropertyString -Value $property.Value -Name $Name
+        if (-not [string]::IsNullOrWhiteSpace($nested)) {
+            return $nested
+        }
+    }
+
+    return $null
+}
+
+function ConvertTo-XmlEscapedString {
+    param([AllowNull()][string]$Value)
+
+    if ($null -eq $Value) {
+        return ""
+    }
+
+    return [Security.SecurityElement]::Escape($Value)
+}
+
+function Format-SoapDate {
+    param([Parameter(Mandatory = $true)][DateTime]$Value)
+
+    return $Value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+}
+
+function New-StoreSoapEnvelope {
+    param(
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][string]$To,
+        [Parameter(Mandatory = $true)][string]$Body
+    )
+
+    $created = Format-SoapDate -Value (Get-Date).ToUniversalTime()
+    $expires = Format-SoapDate -Value (Get-Date).ToUniversalTime().AddMinutes(5)
+    $messageId = [Guid]::NewGuid().ToString()
+    $actionEscaped = ConvertTo-XmlEscapedString $Action
+    $toEscaped = ConvertTo-XmlEscapedString $To
+
+    return @"
+<s:Envelope xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+  <s:Header>
+    <a:Action s:mustUnderstand="1">$actionEscaped</a:Action>
+    <a:MessageID>urn:uuid:$messageId</a:MessageID>
+    <a:To s:mustUnderstand="1">$toEscaped</a:To>
+    <o:Security s:mustUnderstand="1" xmlns:o="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+      <Timestamp xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
+        <Created>$created</Created>
+        <Expires>$expires</Expires>
+      </Timestamp>
+      <wuws:WindowsUpdateTicketsToken wsu:id="ClientMSA" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" xmlns:wuws="http://schemas.microsoft.com/msus/2014/10/WindowsUpdateAuthorization">
+        <TicketType Name="MSA" Version="1.0" Policy="MBI_SSL">
+          <User />
+        </TicketType>
+      </wuws:WindowsUpdateTicketsToken>
+    </o:Security>
+  </s:Header>
+  <s:Body>
+$Body
+  </s:Body>
+</s:Envelope>
+"@
+}
+
+function Invoke-MicrosoftStoreSoap {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$Soap
+    )
+
+    $oldCallback = [Net.ServicePointManager]::ServerCertificateValidationCallback
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = {
+        param($Sender, $Certificate, $Chain, $SslPolicyErrors)
+
+        if ($SslPolicyErrors -eq [Net.Security.SslPolicyErrors]::None) {
+            return $true
+        }
+
+        try {
+            $request = $Sender -as [Net.HttpWebRequest]
+            $hostName = if ($null -ne $request -and $null -ne $request.RequestUri) { $request.RequestUri.Host } else { "" }
+            $subject = if ($null -ne $Certificate) { [string]$Certificate.Subject } else { "" }
+            $issuer = if ($null -ne $Certificate) { [string]$Certificate.Issuer } else { "" }
+
+            return $hostName -ieq "fe3.delivery.mp.microsoft.com" -and
+                ($subject -match "delivery\.mp\.microsoft\.com" -or $subject -match "Microsoft") -and
+                ($issuer -match "Microsoft" -or $issuer -match "Microsoft Update")
+        } catch {
+            return $false
+        }
+    }
+
+    try {
+        return Invoke-HttpText -Uri $Uri -Method "POST" -Body $Soap -ContentType "application/soap+xml; charset=utf-8" -Headers @{
+            "MS-CV" = ([Guid]::NewGuid().ToString("N").Substring(0, 16) + ".0")
+        }
+    } finally {
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $oldCallback
+    }
+}
+
+function Get-XmlLocalNameValues {
+    param(
+        [Parameter(Mandatory = $true)][string]$XmlText,
+        [Parameter(Mandatory = $true)][string]$LocalName
+    )
+
+    $document = New-Object Xml.XmlDocument
+    $document.PreserveWhitespace = $false
+    $document.LoadXml($XmlText)
+    $nodes = $document.SelectNodes(("//*[local-name()='{0}']" -f $LocalName))
+
+    $values = @()
+    foreach ($node in $nodes) {
+        $values += [string]$node.InnerText
+    }
+
+    return $values
+}
+
+function Get-CodexDesktopStoreUpdateManifest {
+    try {
+        $manifestText = Invoke-HttpText -Uri $script:CodexDesktopStoreUpdateManifestUrl
+        if ([string]::IsNullOrWhiteSpace($manifestText)) {
+            return $null
+        }
+
+        return $manifestText | ConvertFrom-Json
+    } catch {
+        Write-WarnLine "Could not read OpenAI Codex Windows Store update manifest: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Resolve-CodexDesktopMicrosoftStoreMsix {
+    $arch = Get-ArchitectureInfo
+    $storeArchitecture = if ($arch.CodexArchitecture -ieq "Arm64") { "arm64" } else { "x64" }
+
+    Write-Info "Resolving Codex Desktop MSIX from Microsoft Store metadata for $storeArchitecture."
+
+    if ($CheckOnly) {
+        return [PSCustomObject]@{
+            PackageMoniker = "OpenAI.Codex_check_$($storeArchitecture)__2p2nqsd0c76g0"
+            DownloadUrl    = "https://tlu.dl.delivery.mp.microsoft.com/check/OpenAI.Codex.Msix"
+            ContentLength  = 0
+        }
+    }
+
+    $manifest = Get-CodexDesktopStoreUpdateManifest
+    if ($null -ne $manifest -and -not [string]::IsNullOrWhiteSpace([string]$manifest.buildVersion)) {
+        Write-Info "OpenAI Windows Store manifest version: $($manifest.buildVersion)"
+    }
+
+    $catalogUrl = "https://displaycatalog.mp.microsoft.com/v7.0/products/$($script:CodexDesktopStoreProductId)?market=US&languages=en-US,en,neutral"
+    $catalog = (Invoke-HttpText -Uri $catalogUrl) | ConvertFrom-Json
+    $wuCategoryId = Find-ObjectPropertyString -Value $catalog -Name "WuCategoryId"
+    if ([string]::IsNullOrWhiteSpace($wuCategoryId)) {
+        throw "Microsoft Store DisplayCatalog did not return WuCategoryId for $($script:CodexDesktopStoreProductId)."
+    }
+
+    $fe3Endpoint = "https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx"
+    $fe3SecuredEndpoint = "https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx/secured"
+    $now = (Get-Date).ToUniversalTime()
+
+    $getCookieBody = @"
+<GetCookie xmlns="http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService">
+  <oldCookie></oldCookie>
+  <lastChange>2015-10-21T17:01:07.1472913Z</lastChange>
+  <currentTime>$(Format-SoapDate -Value $now)</currentTime>
+  <protocolVersion>1.40</protocolVersion>
+</GetCookie>
+"@
+    $getCookieSoap = New-StoreSoapEnvelope -Action "http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService/GetCookie" -To $fe3Endpoint -Body $getCookieBody
+    $cookieXml = Invoke-MicrosoftStoreSoap -Uri $fe3Endpoint -Soap $getCookieSoap
+    $cookie = @(Get-XmlLocalNameValues -XmlText $cookieXml -LocalName "EncryptedData" | Select-Object -First 1)
+    if ([string]::IsNullOrWhiteSpace([string]$cookie)) {
+        throw "Microsoft Store FE3 GetCookie did not return EncryptedData."
+    }
+
+    $baselineUpdateIds = @(
+        1, 2, 3, 11, 19, 544, 549, 2359974, 5169044, 8788830, 23110993, 23110994,
+        54341900, 54343656, 59830006, 59830007, 59830008, 60484010, 62450018,
+        62450019, 62450020, 66027979, 66053150, 97657898, 98822896, 98959022,
+        98959023, 98959024, 98959025, 98959026, 104433538, 104900364, 105489019,
+        117765322, 129905029, 130040031, 132387090, 132393049, 138537048,
+        140377312, 143747671, 158941041, 158941042, 158941043, 158941044,
+        159123858, 159130928, 164836897, 164847386, 164848327, 164852241,
+        164852246, 164852252, 164852253
+    )
+    $installedIds = ($baselineUpdateIds | ForEach-Object { "<int>$_</int>" }) -join ""
+    $deviceAttributes = "OSArchitecture=AMD64;DeviceFamily=Windows.Desktop;App=WU;AppVer=10.0.22621.1;OSVersion=10.0.22621.1;InstallationType=Client;IsDeviceRetailDemo=0;"
+    if ($storeArchitecture -eq "arm64") {
+        $deviceAttributes = "OSArchitecture=ARM64;DeviceFamily=Windows.Desktop;App=WU;AppVer=10.0.22621.1;OSVersion=10.0.22621.1;InstallationType=Client;IsDeviceRetailDemo=0;"
+    }
+
+    $syncBody = @"
+<SyncUpdates xmlns="http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService">
+  <cookie>
+    <Expiration>$(Format-SoapDate -Value $now.AddDays(1))</Expiration>
+    <EncryptedData>$(ConvertTo-XmlEscapedString ([string]$cookie))</EncryptedData>
+  </cookie>
+  <parameters>
+    <ExpressQuery>false</ExpressQuery>
+    <InstalledNonLeafUpdateIDs>$installedIds</InstalledNonLeafUpdateIDs>
+    <OtherCachedUpdateIDs></OtherCachedUpdateIDs>
+    <SkipSoftwareSync>false</SkipSoftwareSync>
+    <NeedTwoGroupOutOfScopeUpdates>true</NeedTwoGroupOutOfScopeUpdates>
+    <FilterAppCategoryIds>
+      <CategoryIdentifier>
+        <Id>$(ConvertTo-XmlEscapedString $wuCategoryId)</Id>
+      </CategoryIdentifier>
+    </FilterAppCategoryIds>
+    <TreatAppCategoryIdsAsInstalled>true</TreatAppCategoryIdsAsInstalled>
+    <AlsoPerformRegularSync>false</AlsoPerformRegularSync>
+    <ComputerSpec />
+    <ExtendedUpdateInfoParameters>
+      <XmlUpdateFragmentTypes>
+        <XmlUpdateFragmentType>Extended</XmlUpdateFragmentType>
+      </XmlUpdateFragmentTypes>
+      <Locales>
+        <string>en-US</string>
+        <string>en</string>
+      </Locales>
+    </ExtendedUpdateInfoParameters>
+    <ClientPreferredLanguages>
+      <string>en-US</string>
+    </ClientPreferredLanguages>
+    <ProductsParameters>
+      <SyncCurrentVersionOnly>false</SyncCurrentVersionOnly>
+      <DeviceAttributes>$deviceAttributes</DeviceAttributes>
+      <CallerAttributes>Interactive=1;IsSeeker=0;</CallerAttributes>
+      <Products />
+    </ProductsParameters>
+  </parameters>
+</SyncUpdates>
+"@
+
+    $syncSoap = New-StoreSoapEnvelope -Action "http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService/SyncUpdates" -To $fe3Endpoint -Body $syncBody
+    $syncXml = Invoke-MicrosoftStoreSoap -Uri $fe3Endpoint -Soap $syncSoap
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    foreach ($fragmentText in (Get-XmlLocalNameValues -XmlText $syncXml -LocalName "Xml")) {
+        $fragment = [Net.WebUtility]::HtmlDecode($fragmentText)
+        if ($fragment -notmatch "AppxMetadata" -or $fragment -notmatch "SecuredFragment") {
+            continue
+        }
+
+        $identityMatch = [regex]::Match($fragment, '<UpdateIdentity\s+UpdateID="(?<id>[^"]+)"\s+RevisionNumber="(?<revision>[^"]+)"', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        $packageMatch = [regex]::Match($fragment, '<AppxMetadata\b(?=[^>]*\bPackageType="(?<type>[^"]+)")(?=[^>]*\bPackageMoniker="(?<moniker>[^"]+)")[^>]*>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $identityMatch.Success -or -not $packageMatch.Success) {
+            continue
+        }
+
+        $moniker = $packageMatch.Groups["moniker"].Value
+        if ($moniker -notlike "OpenAI.Codex_*" -or $moniker -notmatch "_$storeArchitecture`__") {
+            continue
+        }
+
+        $version = ConvertTo-VersionSafe $moniker
+        $candidates.Add([PSCustomObject]@{
+            PackageMoniker = $moniker
+            PackageType    = $packageMatch.Groups["type"].Value
+            UpdateId       = $identityMatch.Groups["id"].Value
+            RevisionNumber = $identityMatch.Groups["revision"].Value
+            Version        = $version
+        }) | Out-Null
+    }
+
+    $package = $candidates | Sort-Object -Property Version -Descending | Select-Object -First 1
+    if ($null -eq $package) {
+        throw "Microsoft Store FE3 did not return an OpenAI.Codex $storeArchitecture MSIX package."
+    }
+
+    $extendedBody = @"
+<GetExtendedUpdateInfo2 xmlns="http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService">
+  <updateIDs>
+    <UpdateIdentity>
+      <UpdateID>$(ConvertTo-XmlEscapedString $package.UpdateId)</UpdateID>
+      <RevisionNumber>$(ConvertTo-XmlEscapedString $package.RevisionNumber)</RevisionNumber>
+    </UpdateIdentity>
+  </updateIDs>
+  <infoTypes>
+    <XmlUpdateFragmentType>FileUrl</XmlUpdateFragmentType>
+    <XmlUpdateFragmentType>FileDecryption</XmlUpdateFragmentType>
+  </infoTypes>
+  <deviceAttributes>$deviceAttributes</deviceAttributes>
+</GetExtendedUpdateInfo2>
+"@
+    $extendedSoap = New-StoreSoapEnvelope -Action "http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService/GetExtendedUpdateInfo2" -To $fe3SecuredEndpoint -Body $extendedBody
+    $extendedXml = Invoke-MicrosoftStoreSoap -Uri $fe3SecuredEndpoint -Soap $extendedSoap
+    $downloadUrl = @(Get-XmlLocalNameValues -XmlText $extendedXml -LocalName "Url" |
+        Where-Object { $_ -match "^https?://" } |
+        Sort-Object Length -Descending |
+        Select-Object -First 1)
+
+    if ([string]::IsNullOrWhiteSpace([string]$downloadUrl)) {
+        throw "Microsoft Store FE3 did not return a package URL for $($package.PackageMoniker)."
+    }
+
+    return [PSCustomObject]@{
+        PackageMoniker = [string]$package.PackageMoniker
+        DownloadUrl    = [string]$downloadUrl
+        ContentLength  = 0
+    }
+}
+
+function Enable-AppxTrustedPackageInstall {
+    if (-not (Test-IsAdmin)) {
+        throw "Direct MSIX install needs an elevated prompt."
+    }
+
+    if ($CheckOnly) {
+        Write-Info "[check] Would enable AllowAllTrustedApps policy for trusted MSIX sideloading."
+        return
+    }
+
+    foreach ($path in @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock",
+        "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Appx"
+    )) {
+        Set-RegistryDwordValue -Path $path -Name "AllowAllTrustedApps" -Value 1
+    }
+}
+
 function Get-RegistryDwordValue {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -857,6 +1264,25 @@ function Get-RegistryDwordValue {
     }
 
     return $null
+}
+
+function Set-RegistryDwordValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int]$Value
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        New-Item -Path $Path -Force | Out-Null
+    }
+
+    $existing = Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -ne $existing) {
+        Set-ItemProperty -LiteralPath $Path -Name $Name -Value $Value
+    } else {
+        New-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -PropertyType DWord -Force | Out-Null
+    }
 }
 
 function Write-CodexDesktopOfficialPathDiagnostics {
@@ -1539,11 +1965,47 @@ function Invoke-CodexDesktopStoreInstaller {
     throw "Official Microsoft Store installer completed, but the OpenAI.Codex AppX package was not registered."
 }
 
+function Install-CodexDesktopDirectMsix {
+    if (-not (Test-IsAdmin)) {
+        throw "Direct Microsoft Store MSIX install needs an elevated prompt."
+    }
+
+    $resolved = Resolve-CodexDesktopMicrosoftStoreMsix
+    $msixPath = Join-Path $script:TempRoot ($resolved.PackageMoniker + ".Msix")
+
+    Write-Info "Downloading Codex Desktop MSIX from Microsoft Store CDN."
+    Invoke-WebDownload -Uri $resolved.DownloadUrl -OutFile $msixPath
+
+    if ($resolved.ContentLength -gt 0 -and -not $CheckOnly) {
+        $actualLength = (Get-Item -LiteralPath $msixPath).Length
+        if ($actualLength -ne [int64]$resolved.ContentLength) {
+            throw "Downloaded MSIX size mismatch. Expected $($resolved.ContentLength) bytes, got $actualLength bytes."
+        }
+    }
+
+    Assert-AuthenticodeSignature -Path $msixPath -ExpectedSubjectPattern "OpenAI|Microsoft"
+    Enable-AppxTrustedPackageInstall
+
+    $scriptText = @"
+`$ErrorActionPreference = 'Stop'
+Add-AppxPackage -Path $(Quote-PSString $msixPath) -ForceApplicationShutdown
+"@
+
+    Invoke-WindowsPowerShell -ScriptText $scriptText -AllowedExitCodes @(0) | Out-Null
+    $desktopPackage = Wait-CodexDesktopPackage -TimeoutSeconds 90
+    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+        throw "Direct Microsoft Store MSIX install completed, but the OpenAI.Codex AppX package was not registered."
+    }
+
+    Write-Ok "Codex Desktop MSIX installed from Microsoft Store CDN."
+}
+
 function Install-CodexDesktop {
     $support = Get-WindowsSupportInfo
     $desktopPackage = Get-CodexDesktopPackageText
     $wingetError = $null
     $storeInstallerError = $null
+    $directMsixError = $null
 
     if ($support.SupportsWinget) {
         try {
@@ -1558,24 +2020,39 @@ function Install-CodexDesktop {
 
     $desktopPackage = Get-CodexDesktopPackageText
     if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
-        if ($support.IsServer) {
-            Write-WarnLine "Trying the official Microsoft Store web installer. On Windows Server 2022 this may still fail because the Microsoft Store install stack is not normally present."
+        if ($support.IsServer -and -not $support.SupportsWinget) {
+            Write-WarnLine "Skipping Microsoft Store web installer on this Server build because it redirects to Store UI instead of installing."
         } else {
-            Write-Info "Trying the official Microsoft Store web installer fallback."
-        }
+            if ($support.IsServer) {
+                Write-WarnLine "Trying the official Microsoft Store web installer. On Windows Server this may still fail because the Microsoft Store install stack may not be present."
+            } else {
+                Write-Info "Trying the official Microsoft Store web installer fallback."
+            }
 
+            try {
+                Invoke-CodexDesktopStoreInstaller
+            } catch {
+                $storeInstallerError = $_.Exception.Message
+                Write-WarnLine "Official Microsoft Store web installer failed: $storeInstallerError"
+            }
+        }
+    }
+
+    $desktopPackage = Get-CodexDesktopPackageText
+    if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
+        Write-WarnLine "Trying direct Microsoft Store CDN MSIX fallback. This is not a standalone EXE; it installs the signed Store package without Store UI."
         try {
-            Invoke-CodexDesktopStoreInstaller
+            Install-CodexDesktopDirectMsix
         } catch {
-            $storeInstallerError = $_.Exception.Message
-            Write-WarnLine "Official Microsoft Store web installer failed: $storeInstallerError"
+            $directMsixError = $_.Exception.Message
+            Write-WarnLine "Direct Microsoft Store CDN MSIX fallback failed: $directMsixError"
         }
     }
 
     $desktopPackage = Get-CodexDesktopPackageText
     if ([string]::IsNullOrWhiteSpace($desktopPackage)) {
         if ($support.IsServer) {
-            Add-DeferredAction "Codex Desktop requires an official Microsoft Store/App Installer path. For a fully supported setup, run this script on Windows 10/11 client or a Server build where Microsoft App Installer/winget msstore is available."
+            Add-DeferredAction "Codex Desktop has no official standalone Windows EXE. If direct Microsoft Store CDN MSIX install is blocked by this Server build, use Windows 10/11 client or a Server build where Microsoft App Installer/winget msstore is available."
         } else {
             Add-DeferredAction "Open the official Codex Desktop Store page if silent install was blocked by policy: https://get.microsoft.com/installer/download/$($script:CodexDesktopStoreProductId)"
         }
@@ -1586,6 +2063,9 @@ function Install-CodexDesktop {
         }
         if (-not [string]::IsNullOrWhiteSpace($storeInstallerError)) {
             $details += "Store installer: $storeInstallerError"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($directMsixError)) {
+            $details += "direct MSIX: $directMsixError"
         }
 
         $detailText = if ($details.Count -gt 0) { " " + ($details -join " | ") } else { "" }

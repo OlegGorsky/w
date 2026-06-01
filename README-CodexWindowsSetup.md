@@ -66,13 +66,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Setup-CodexWindows.ps1
   1809/build 17763 or newer; WSL distro setup expects Windows 10 2004/build
   19041 or newer.
 - Windows Server is supported for CLI-oriented setup, but Microsoft Store apps
-  are not part of the normal Server 2022 client-app path. Codex Desktop is
-  attempted only through official Microsoft Store infrastructure: `winget -s
-  msstore` where available, then Microsoft's official Store web installer for
-  product ID `9PLM9XGG6VKS`. Where Store UI is missing, the installer is tried
-  in official elevated `--silent --allusers` mode. The script does not use
-  third-party MSIX mirrors. If Microsoft blocks the install on Windows Server,
-  the Desktop step fails clearly instead of reporting a false success.
+  are not part of the normal Server 2022 client-app path. Codex Desktop has no
+  official standalone Windows `.exe` installer. The script attempts `winget -s
+  msstore` where available, Microsoft's official Store web installer for product
+  ID `9PLM9XGG6VKS`, and then a direct Microsoft Store CDN MSIX fallback resolved
+  from Microsoft Store metadata. The MSIX fallback checks the Authenticode
+  signature and does not use third-party MSIX mirrors. If Microsoft or local
+  AppX policy blocks the install on Windows Server, the Desktop step fails
+  clearly instead of reporting a false success.
 - Store policy registry values are reported by default. They are changed only
   when `-RepairStorePolicies` is passed.
 - WSL distro initialization can still require one interactive first launch to

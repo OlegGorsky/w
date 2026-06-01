@@ -25,17 +25,18 @@ It installs or repairs:
 - WSL/Ubuntu
 - Codex CLI inside WSL after the distro is initialized
 
-Codex Desktop is installed only through official Microsoft Store infrastructure:
-`winget -s msstore` where available, then Microsoft's official Store web
-installer for the Codex product ID (`9PLM9XGG6VKS`). Where Store UI is missing,
-the installer is tried in official elevated `--silent --allusers` mode. The
-script does not use third-party MSIX mirrors.
+Codex Desktop has no official standalone Windows `.exe` installer. The script
+uses Store-based paths instead: `winget -s msstore` where available, Microsoft's
+official Store web installer for product ID `9PLM9XGG6VKS`, and then a direct
+Microsoft Store CDN MSIX fallback resolved from Microsoft Store metadata. The
+MSIX fallback checks the Authenticode signature and does not use third-party
+MSIX mirrors.
 
 On Windows Server 2022 and older, Microsoft Store/App Installer support is not
-the normal desktop-client path. The script will still try the official Microsoft
-Store web installer and will fail clearly if Microsoft blocks the install. For a
-fully supported Desktop setup, use Windows 10/11 client or another Windows build
-where Microsoft App Installer/Store installs are supported.
+the normal desktop-client path. The script skips the Store web installer loop on
+those builds and tries the direct signed MSIX fallback instead. For a fully
+supported Desktop setup, use Windows 10/11 client or another Windows build where
+Microsoft App Installer/Store installs are supported.
 
 Full script: [`Setup-CodexWindows.ps1`](./Setup-CodexWindows.ps1)
 

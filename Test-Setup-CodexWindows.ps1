@@ -71,11 +71,17 @@ foreach ($requiredFunction in @(
     "Get-CodexDesktopPackageText",
     "Invoke-CodexDesktopWingetInstall",
     "Invoke-CodexDesktopStoreInstaller",
+    "Install-CodexDesktopDirectMsix",
+    "Resolve-CodexDesktopMicrosoftStoreMsix",
+    "Enable-AppxTrustedPackageInstall",
+    "Invoke-MicrosoftStoreSoap",
+    "Get-CodexDesktopStoreUpdateManifest",
     "Wait-CodexDesktopPackage",
     "Assert-AuthenticodeSignature",
     "Join-CommandArguments",
     "Write-CodexDesktopOfficialPathDiagnostics",
     "Get-RegistryDwordValue",
+    "Set-RegistryDwordValue",
     "Repair-WingetSources",
     "Get-WindowsOptionalFeatureState",
     "Test-WindowsOptionalFeatureEnabled",
@@ -101,6 +107,12 @@ Assert-Contains -Haystack $content -Needle 'Microsoft Corporation' -Message "Off
 Assert-Contains -Haystack $content -Needle 'CanTryStoreInstaller' -Message "Windows support info must model the official Store web installer path."
 Assert-Contains -Haystack $content -Needle 'DoNotConnectToWindowsUpdateInternetLocations' -Message "Desktop install diagnostics must report Windows Update policy blockers."
 Assert-Contains -Haystack $content -Needle 'installer returned but OpenAI.Codex AppX package was not registered' -Message "Desktop install must fail clearly when Store installer redirects instead of installing."
+Assert-Contains -Haystack $content -Needle 'windows-store-update.json' -Message "Direct MSIX fallback must read the OpenAI Windows Store update manifest."
+Assert-Contains -Haystack $content -Needle 'displaycatalog.mp.microsoft.com' -Message "Direct MSIX fallback must resolve the package through Microsoft Store metadata."
+Assert-Contains -Haystack $content -Needle 'fe3.delivery.mp.microsoft.com' -Message "Direct MSIX fallback must resolve a Microsoft CDN URL through FE3."
+Assert-Contains -Haystack $content -Needle 'Add-AppxPackage -Path' -Message "Direct MSIX fallback must install with Add-AppxPackage."
+Assert-Contains -Haystack $content -Needle 'AllowAllTrustedApps' -Message "Direct MSIX fallback must enable trusted MSIX sideloading when needed."
+Assert-Contains -Haystack $content -Needle 'Skipping Microsoft Store web installer on this Server build' -Message "Server builds without winget must not open the Store web installer loop."
 Assert-Contains -Haystack $content -Needle 'Write-Ok $line' -Message "Final summary must avoid duplicated OK prefixes."
 Assert-NotContains -Haystack $content -Needle '"OK: {0}"' -Message "Final summary must not build OK: OK lines."
 Assert-NotContains -Haystack $content -Needle 'rerun with -InstallCodexInWsl' -Message "Deprecated WSL rerun hint must be removed."
