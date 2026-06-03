@@ -2184,7 +2184,7 @@ function Install-CodexCli {
     }
 
     $installerPath = Join-Path $script:TempRoot "codex-install.ps1"
-    Invoke-WebDownload -Uri "https://chatgpt.com/codex/install.ps1" -OutFile $installerPath
+    Invoke-WebDownload -Uri "https://github.com/openai/codex/releases/latest/download/install.ps1" -OutFile $installerPath
 
     if (-not $CheckOnly) {
         $content = Get-Content -Path $installerPath -Raw
@@ -3157,7 +3157,7 @@ function Install-CodexCliInWsl {
         Write-WarnLine "Could not install curl/ca-certificates in WSL as root: $($_.Exception.Message)"
     }
 
-    Invoke-NativeCommand -FilePath $wslExe -Arguments @("-d", $WslDistro, "--", "bash", "-lc", "set -e; curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh; if command -v codex >/dev/null 2>&1; then codex --version; elif [ -x ~/.local/bin/codex ]; then ~/.local/bin/codex --version; else echo 'Codex installed, but it is not on PATH yet.'; fi") -AllowedExitCodes @(0) | Out-Null
+    Invoke-NativeCommand -FilePath $wslExe -Arguments @("-d", $WslDistro, "--", "bash", "-lc", "set -e; curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh | CODEX_NON_INTERACTIVE=1 sh; if command -v codex >/dev/null 2>&1; then codex --version; elif [ -x ~/.local/bin/codex ]; then ~/.local/bin/codex --version; else echo 'Codex installed, but it is not on PATH yet.'; fi") -AllowedExitCodes @(0) | Out-Null
     Write-Ok "Codex CLI install in WSL completed."
 }
 
