@@ -14,6 +14,12 @@ Fallback if GitHub Pages is unavailable:
 irm https://github.com/OlegGorsky/w/raw/main/i.ps1|iex
 ```
 
+Related short bootstrap for NeuroGate/Codex Desktop API setup:
+
+```powershell
+irm https://oleggorsky.github.io/w/d.ps1|iex
+```
+
 It installs or repairs:
 
 - PowerShell 7

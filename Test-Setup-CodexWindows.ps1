@@ -61,17 +61,24 @@ $resolvedScript = Resolve-Path -LiteralPath $ScriptPath
 $content = Get-Content -LiteralPath $resolvedScript -Raw
 $bootstrapScript = Join-Path (Split-Path -Parent $resolvedScript) "i.ps1"
 $bootstrapContent = Get-Content -LiteralPath $bootstrapScript -Raw
+$desktopBootstrapScript = Join-Path (Split-Path -Parent $resolvedScript) "d.ps1"
+$desktopBootstrapContent = Get-Content -LiteralPath $desktopBootstrapScript -Raw
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($resolvedScript, [ref]$tokens, [ref]$errors)
 $bootstrapTokens = $null
 $bootstrapErrors = $null
 $bootstrapAst = [System.Management.Automation.Language.Parser]::ParseFile($bootstrapScript, [ref]$bootstrapTokens, [ref]$bootstrapErrors)
+$desktopBootstrapTokens = $null
+$desktopBootstrapErrors = $null
+$desktopBootstrapAst = [System.Management.Automation.Language.Parser]::ParseFile($desktopBootstrapScript, [ref]$desktopBootstrapTokens, [ref]$desktopBootstrapErrors)
 
 Assert-True -Condition ($errors.Count -eq 0) -Message ("PowerShell parser errors: " + (($errors | ForEach-Object { $_.Message }) -join "; "))
 Assert-True -Condition ($bootstrapErrors.Count -eq 0) -Message ("Bootstrap parser errors: " + (($bootstrapErrors | ForEach-Object { $_.Message }) -join "; "))
+Assert-True -Condition ($desktopBootstrapErrors.Count -eq 0) -Message ("Desktop bootstrap parser errors: " + (($desktopBootstrapErrors | ForEach-Object { $_.Message }) -join "; "))
 Assert-NoQuestionMarkVariableInterpolation -Ast $ast -Path $resolvedScript
 Assert-NoQuestionMarkVariableInterpolation -Ast $bootstrapAst -Path $bootstrapScript
+Assert-NoQuestionMarkVariableInterpolation -Ast $desktopBootstrapAst -Path $desktopBootstrapScript
 
 $paramBlock = $ast.ParamBlock
 Assert-True -Condition ($null -ne $paramBlock) -Message "Script must define a parameter block."
@@ -238,6 +245,10 @@ Assert-Contains -Haystack $bootstrapContent -Needle 'raw.githubusercontent.com/O
 Assert-Contains -Haystack $bootstrapContent -Needle '-RepairStorePolicies' -Message "Short web bootstrap must repair Store policies by default for stripped Windows images."
 Assert-Contains -Haystack $bootstrapContent -Needle '$setupRequestUrl = "{0}?cb={1}" -f $setupUrl, $cacheBust' -Message "Bootstrap cache-bust URL must avoid PowerShell variable-name ambiguity before ?."
 Assert-Contains -Haystack $bootstrapContent -Needle 'Invoke-WebRequest -Uri $setupRequestUrl' -Message "Bootstrap must download using the safely formatted cache-bust URL."
+Assert-Contains -Haystack $desktopBootstrapContent -Needle 'raw.githubusercontent.com/OlegGorsky/ng/main/d.ps1' -Message "Desktop short bootstrap must delegate to the NeuroGate bootstrap source."
+Assert-Contains -Haystack $desktopBootstrapContent -Needle '$requestUrl = "{0}?cb={1}" -f $bootstrapUrl, $cacheBust' -Message "Desktop bootstrap cache-bust URL must avoid PowerShell variable-name ambiguity before ?."
+Assert-Contains -Haystack $desktopBootstrapContent -Needle 'Downloaded NeuroGate bootstrap looks like HTML' -Message "Desktop bootstrap must reject HTML error pages before execution."
+Assert-Contains -Haystack $desktopBootstrapContent -Needle 'Test-BootstrapSyntax $bootstrap' -Message "Desktop bootstrap must parse-check the downloaded script before execution."
 Assert-NotContains -Haystack $bootstrapContent -Needle '"$setupUrl?cb=$cacheBust"' -Message "Bootstrap must not interpolate a variable directly before ? in an expandable string."
 Assert-NotContains -Haystack $bootstrapContent -Needle 'ToUnixTimeSeconds' -Message "Bootstrap must avoid newer DateTimeOffset APIs for old Windows PowerShell/.NET builds."
 Assert-NotContains -Haystack $bootstrapContent -Needle 'raw/main' -Message "Bootstrap must avoid stale raw.githubusercontent.com main cache for setup download."
