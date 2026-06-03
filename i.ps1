@@ -6,7 +6,7 @@ try {
 } catch {
 }
 
-$setupVersion = "abeed0d14d7d1e25e36d7c7a0e6601ec91a80db6"
+$setupVersion = "4b7396ee6d9631be4658ed9937fff09d9c8d3127"
 $setupUrl = "https://raw.githubusercontent.com/OlegGorsky/w/$setupVersion/Setup-CodexWindows.ps1"
 $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) { $env:TEMP } else { [IO.Path]::GetTempPath() }
 $setup = Join-Path $tempRoot "Setup-CodexWindows.ps1"
